@@ -281,5 +281,9 @@ class IBOVIndex(IndexBase):
             return df.loc[:, ["Código"]].copy()
 
 
+def run(*args, **kwargs):
+    return get_instruments(*args, market_index="br_index", **kwargs)
+
+
 if __name__ == "__main__":
-    fire.Fire(partial(get_instruments, market_index="br_index"))
+    fire.Fire(run)

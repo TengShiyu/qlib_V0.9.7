@@ -275,5 +275,9 @@ class SP400Index(WIKIIndex):
         logger.warning(f"No suitable data source has been found!")
 
 
+def run(*args, **kwargs):
+    return get_instruments(*args, market_index="us_index", **kwargs)
+
+
 if __name__ == "__main__":
-    fire.Fire(partial(get_instruments, market_index="us_index"))
+    fire.Fire(run)
