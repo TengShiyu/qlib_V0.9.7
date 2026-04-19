@@ -46,7 +46,7 @@ INDEX_BENCH_URL = "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.
 
 
 class YahooCollector(BaseCollector):
-    retry = 5  # Configuration attribute.  How many times will it try to re-request the data if the network fails.
+    retry = 1  # Try failed Yahoo requests only once to avoid long stalls on delisted/unavailable symbols.
 
     def __init__(
         self,
@@ -452,6 +452,24 @@ class YahooNormalize(BaseNormalize):
 class YahooNormalize1d(YahooNormalize, ABC):
     DAILY_FORMAT = "%Y-%m-%d"
 
+    def _coerce_daily_date(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Convert mixed Yahoo daily timestamps to plain trading dates."""
+        if df.empty or self._date_field_name not in df.columns:
+            return df
+
+        df = df.copy()
+        date_series = (
+            df[self._date_field_name]
+            .astype(str)
+            .str.strip()
+            .str.extract(r"(\d{4}-\d{2}-\d{2})", expand=False)
+        )
+        if date_series.isna().any():
+            sample_values = df.loc[date_series.isna(), self._date_field_name].head(3).tolist()
+            raise ValueError(f"cannot parse daily date values in {self._date_field_name}: {sample_values}")
+        df[self._date_field_name] = pd.to_datetime(date_series, format=self.DAILY_FORMAT)
+        return df
+
     def adjusted_price(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return df
@@ -473,6 +491,7 @@ class YahooNormalize1d(YahooNormalize, ABC):
         return df.reset_index()
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = self._coerce_daily_date(df)
         df = super(YahooNormalize1d, self).normalize(df)
         df = self._manual_adj_data(df)
         return df
@@ -935,7 +954,7 @@ class Run(BaseRun):
         qlib_data_1d_dir: str,
         end_date: str = None,
         check_data_length: int = None,
-        delay: float = 1,
+        delay: float = 0.1,
         exists_skip: bool = False,
     ):
         """update yahoo data to bin
@@ -950,7 +969,7 @@ class Run(BaseRun):
         check_data_length: int
             check data length, if not None and greater than 0, each symbol will be considered complete if its data length is greater than or equal to this value, otherwise it will be fetched again, the maximum number of fetches being (max_collector_count). By default None.
         delay: float
-            time.sleep(delay), default 1
+            time.sleep(delay), default 0.1
         exists_skip: bool
             exists skip, by default False
         Notes
