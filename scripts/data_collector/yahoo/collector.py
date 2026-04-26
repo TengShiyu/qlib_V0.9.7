@@ -756,6 +756,8 @@ class Run(BaseRun):
         region: str
             region, value from ["CN", "US", "BR"], default "CN"
         """
+        self._source_dir_provided = source_dir is not None
+        self._normalize_dir_provided = normalize_dir is not None
         super().__init__(source_dir, normalize_dir, max_workers, interval)
         self.region = region
 
@@ -975,6 +977,9 @@ class Run(BaseRun):
         Notes
         -----
             If the data in qlib_data_dir is incomplete, np.nan will be populated to trading_date for the previous trading day
+            If source_dir or normalize_dir are not explicitly specified, they will default to
+            <qlib_data_1d_dir>/metadata/source and <qlib_data_1d_dir>/metadata/normalize
+            for this update workflow.
 
         Examples
         -------
@@ -986,6 +991,15 @@ class Run(BaseRun):
 
         # download qlib 1d data
         qlib_data_1d_dir = str(Path(qlib_data_1d_dir).expanduser().resolve())
+        metadata_dir = Path(qlib_data_1d_dir).joinpath("metadata")
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        if not self._source_dir_provided:
+            self.source_dir = metadata_dir.joinpath("source")
+            self.source_dir.mkdir(parents=True, exist_ok=True)
+        if not self._normalize_dir_provided:
+            self.normalize_dir = metadata_dir.joinpath("normalize")
+            self.normalize_dir.mkdir(parents=True, exist_ok=True)
+
         if not exists_qlib_data(qlib_data_1d_dir):
             GetData().qlib_data(
                 target_dir=qlib_data_1d_dir, interval=self.interval, region=self.region, exists_skip=exists_skip
