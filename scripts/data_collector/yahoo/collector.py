@@ -6,6 +6,8 @@ import sys
 import copy
 import time
 import datetime
+import csv
+import re
 import importlib
 from abc import ABC
 import multiprocessing
@@ -16,6 +18,7 @@ import fire
 import requests
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from loguru import logger
 from yahooquery import Ticker
 from dateutil.tz import tzlocal
@@ -957,6 +960,7 @@ class Run(BaseRun):
         end_date: str = None,
         check_data_length: int = None,
         delay: float = 0.1,
+        stale_ratio: float = 0.001,
         exists_skip: bool = False,
     ):
         """update yahoo data to bin
@@ -972,6 +976,10 @@ class Run(BaseRun):
             check data length, if not None and greater than 0, each symbol will be considered complete if its data length is greater than or equal to this value, otherwise it will be fetched again, the maximum number of fetches being (max_collector_count). By default None.
         delay: float
             time.sleep(delay), default 0.1
+        stale_ratio: float
+            threshold for stale raw csv ratio.
+            if stale ratio <= stale_ratio, continue automatically; otherwise ask for confirmation.
+            default 0.001 (0.1%).
         exists_skip: bool
             exists skip, by default False
         Notes
@@ -980,6 +988,8 @@ class Run(BaseRun):
             If source_dir or normalize_dir are not explicitly specified, they will default to
             <qlib_data_1d_dir>/metadata/source and <qlib_data_1d_dir>/metadata/normalize
             for this update workflow.
+            Before downloading, it checks whether source csv files are already complete
+            and up-to-date to `end_date` for 1d data. If true, download step is skipped.
 
         Examples
         -------
@@ -988,6 +998,8 @@ class Run(BaseRun):
 
         if self.interval.lower() != "1d":
             logger.warning(f"currently supports 1d data updates: --interval 1d")
+        if stale_ratio < 0 or stale_ratio > 1:
+            raise ValueError(f"stale_ratio should be within [0, 1], got {stale_ratio}")
 
         # download qlib 1d data
         qlib_data_1d_dir = str(Path(qlib_data_1d_dir).expanduser().resolve())
@@ -1012,9 +1024,16 @@ class Run(BaseRun):
         if end_date is None:
             end_date = (pd.Timestamp(trading_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # download data from yahoo
+        # download data from yahoo only if source csv files are not complete/up-to-date
         # NOTE: when downloading data from YahooFinance, max_workers is recommended to be 1
-        self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
+        source_csv_paths = list(self.source_dir.glob("*.csv"))
+        if not source_csv_paths:
+            logger.info(f"skip precheck: no csv files found in {self.source_dir}, start downloading directly")
+            self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
+        elif self._is_raw_source_up_to_date(end_date, stale_ratio=stale_ratio):
+            logger.info(f"skip download: source csv files are already up-to-date for end_date={end_date}")
+        else:
+            self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
         # NOTE: a larger max_workers setting here would be faster
         self.max_workers = (
             max(multiprocessing.cpu_count() - 2, 1)
@@ -1044,6 +1063,133 @@ class Run(BaseRun):
         )
         for _index in index_list:
             get_instruments(str(qlib_data_1d_dir), _index, market_index=f"{_region}_index")
+
+    @staticmethod
+    def _extract_daily_date(value):
+        if value is None:
+            return None
+        match = re.search(r"\d{4}-\d{2}-\d{2}", str(value))
+        if not match:
+            return None
+        return pd.Timestamp(match.group(0)).date()
+
+    @staticmethod
+    def _read_last_csv_row(file_path: Path):
+        file_path = Path(file_path)
+        if not file_path.exists() or file_path.stat().st_size == 0:
+            return None
+
+        with file_path.open("rb") as fp:
+            header_line = fp.readline().decode("utf-8", errors="ignore").strip()
+            if not header_line:
+                return None
+            fp.seek(0, 2)
+            position = fp.tell()
+            chunk = b""
+            while position > 0:
+                step = min(4096, position)
+                position -= step
+                fp.seek(position)
+                chunk = fp.read(step) + chunk
+                if chunk.count(b"\n") >= 2:
+                    break
+            lines = [line for line in chunk.decode("utf-8", errors="ignore").splitlines() if line.strip()]
+            if len(lines) < 2:
+                return None
+            last_row = lines[-1]
+
+        headers = next(csv.reader([header_line]))
+        values = next(csv.reader([last_row]))
+        if not headers or not values:
+            return None
+        return dict(zip(headers, values))
+
+    def _is_raw_source_up_to_date(self, end_date: str, stale_ratio: float = 0.001) -> bool:
+        if self.interval.lower() != "1d":
+            return False
+
+        required_ohlcv = ["open", "high", "low", "close", "volume"]
+        target_last_date = (pd.Timestamp(end_date) - pd.Timedelta(days=1)).date()
+        csv_paths = list(self.source_dir.glob("*.csv"))
+        if not csv_paths:
+            logger.info("raw csv check: source_dir has no csv files")
+            return False
+
+        # use the collector's current instrument list as the completeness baseline
+        collector_cls = getattr(self._cur_module, self.collector_class_name)
+        collector = collector_cls(
+            save_dir=self.source_dir,
+            interval=self.interval,
+            max_workers=1,
+            max_collector_count=1,
+            delay=0,
+            check_data_length=None,
+            limit_nums=None,
+        )
+        expected_files = {
+            f"{code_to_fname(collector.normalize_symbol(symbol))}.csv" for symbol in collector.instrument_list
+        }
+        existing_files = {path.name for path in csv_paths}
+        missing_files = expected_files - existing_files
+        lagging_symbols = {Path(name).stem.upper() for name in missing_files}
+
+        for csv_path in tqdm(csv_paths, desc="Raw CSV Precheck"):
+            row = self._read_last_csv_row(csv_path)
+            if not row:
+                lagging_symbols.add(csv_path.stem.upper())
+                continue
+            last_date = self._extract_daily_date(row.get("date"))
+            if last_date is None or last_date < target_last_date:
+                lagging_symbols.add(csv_path.stem.upper())
+                continue
+
+            try:
+                df = pd.read_csv(csv_path)
+            except Exception:
+                lagging_symbols.add(csv_path.stem.upper())
+                continue
+
+            # 1) Required OHLCV columns must exist and contain no missing values.
+            if not all(col in df.columns for col in required_ohlcv):
+                lagging_symbols.add(csv_path.stem.upper())
+                continue
+            if df[required_ohlcv].isnull().any().any():
+                lagging_symbols.add(csv_path.stem.upper())
+                continue
+
+            # 2) factor must exist and should not be completely empty.
+            if "factor" not in df.columns or df["factor"].isnull().all():
+                lagging_symbols.add(csv_path.stem.upper())
+
+        if not lagging_symbols:
+            return True
+
+        total_count = max(len(expected_files), 1)
+        lagging_count = len(lagging_symbols)
+        lagging_ratio = lagging_count / total_count
+        lagging_text = ",".join(sorted(lagging_symbols))
+        yellow = "\033[33m"
+        reset = "\033[0m"
+
+        ratio_pct = stale_ratio * 100
+        if lagging_ratio <= stale_ratio:
+            logger.warning(
+                f"{yellow}raw csv check: {lagging_count}/{total_count} symbols are not up-to-date "
+                f"(<= {ratio_pct:.4f}%), continue with existing source files: {lagging_text}{reset}"
+            )
+            return True
+
+        logger.warning(
+            f"{yellow}raw csv check: {lagging_count}/{total_count} symbols are not up-to-date "
+            f"(> {ratio_pct:.4f}%). symbols: {lagging_text}{reset}"
+        )
+        confirm = input(
+            f"More than {ratio_pct:.4f}% source csv files are stale. Type 'yes' to continue or 'no' to stop: "
+        )
+        if str(confirm).strip().lower() == "yes":
+            logger.warning(f"{yellow}continue by user confirmation with stale source csv files.{reset}")
+            return True
+        raise RuntimeError(f"stopped by user: stale source csv ratio is greater than {ratio_pct:.4f}%")
 
 
 if __name__ == "__main__":

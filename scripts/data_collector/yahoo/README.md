@@ -159,7 +159,7 @@ pip install -r requirements.txt
        ```
 
 ### Automatic update of daily frequency data(from yahoo finance)
-  > It is recommended that users update the data manually once (--trading_date 2021-05-25) and then set it to update automatically.
+  > It is recommended that users update the data manually once and then set it to update automatically.
   >
   > **NOTE**: Users can't incrementally  update data based on the offline data provided by Qlib(some fields are removed to reduce the data size). Users should use [yahoo collector](https://github.com/microsoft/qlib/tree/main/scripts/data_collector/yahoo#automatic-update-of-daily-frequency-datafrom-yahoo-finance) to download Yahoo data from scratch and then incrementally update it.
   > 
@@ -180,14 +180,29 @@ pip install -r requirements.txt
       * `end_date`: end of trading day(not included)
       * `check_data_length`: check the number of rows per *symbol*, by default `None`
         > if `len(symbol_df) < check_data_length`, it will be re-fetched, with the number of re-fetches coming from the `max_collector_count` parameter
+      * `stale_ratio`: threshold for stale source csv ratio, by default `0.001` (`0.1%`)
+        > if stale ratio `<= stale_ratio`, continue automatically;
+        > if stale ratio `> stale_ratio`, the program asks for confirmation (`yes`/`no`)
+
+  * Built-in precheck behavior (`update_data_to_bin`)
+      * If no csv file exists in `source_dir`, precheck is skipped and the program downloads data directly.
+      * If csv files exist, the precheck scans files with a progress bar and validates:
+        * no missing symbol csv files
+        * required columns `open, high, low, close, volume` exist and contain no missing values
+        * `factor` column exists and is not completely empty
+        * each csv latest date is up-to-date to `end_date` (`latest_date >= end_date - 1 day`)
+      * If precheck passes, the Yahoo download step is skipped.
 
   * `scripts/data_collector/yahoo/collector.py update_data_to_bin` parameters:
-      * `source_dir`: The directory where the raw data collected from the Internet is saved, default "Path(__file__).parent/source"
-      * `normalize_dir`: Directory for normalize data, default "Path(__file__).parent/normalize"
+      * `source_dir`: The directory where raw csv data is saved.
+        > In `update_data_to_bin`, if not explicitly set, it defaults to `<qlib_data_1d_dir>/metadata/source`
+      * `normalize_dir`: Directory for normalized csv output.
+        > In `update_data_to_bin`, if not explicitly set, it defaults to `<qlib_data_1d_dir>/metadata/normalize`
       * `qlib_data_1d_dir`: the qlib data to be updated for yahoo, usually from: [download qlib data](https://github.com/microsoft/qlib/tree/main/scripts#download-cn-data)
       * `end_date`: end datetime, default ``pd.Timestamp(trading_date + pd.Timedelta(days=1))``; open interval(excluding end)
       * `region`: region, value from ["CN", "US"], default "CN"
       * `interval`: interval, default "1d"(Currently only supports 1d data)
+      * `stale_ratio`: stale source csv threshold in raw data download csv files' pre-check, default `0.001` (`0.1%`)
       * `exists_skip`: exists skip, by default False
 
 ## Using qlib data
@@ -222,4 +237,3 @@ pip install -r requirements.txt
   # get all symbol data
   # df = D.features(D.instruments("all"), ["$close"], freq="1min")
   ```
-
