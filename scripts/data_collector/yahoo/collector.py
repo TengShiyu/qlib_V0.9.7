@@ -957,6 +957,7 @@ class Run(BaseRun):
     def update_data_to_bin(
         self,
         qlib_data_1d_dir: str,
+        trading_date: str = None,
         end_date: str = None,
         check_data_length: int = None,
         delay: float = 0.1,
@@ -970,6 +971,8 @@ class Run(BaseRun):
         qlib_data_1d_dir: str
             the qlib data to be updated for yahoo, usually from: https://github.com/microsoft/qlib/tree/main/scripts#download-cn-data
 
+        trading_date: str
+            start datetime, closed interval(including start). If not None, use this date as the start date.
         end_date: str
             end datetime, default ``pd.Timestamp(trading_date + pd.Timedelta(days=1))``; open interval(excluding end)
         check_data_length: int
@@ -1018,8 +1021,11 @@ class Run(BaseRun):
             )
 
         # start/end date
-        calendar_df = pd.read_csv(Path(qlib_data_1d_dir).joinpath("calendars/day.txt"))
-        trading_date = (pd.Timestamp(calendar_df.iloc[-1, 0]) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        if trading_date is None:
+            calendar_df = pd.read_csv(Path(qlib_data_1d_dir).joinpath("calendars/day.txt"))
+            trading_date = (pd.Timestamp(calendar_df.iloc[-1, 0]) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            trading_date = pd.Timestamp(trading_date).strftime("%Y-%m-%d")
 
         if end_date is None:
             end_date = (pd.Timestamp(trading_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1027,12 +1033,19 @@ class Run(BaseRun):
         # download data from yahoo only if source csv files are not complete/up-to-date
         # NOTE: when downloading data from YahooFinance, max_workers is recommended to be 1
         source_csv_paths = list(self.source_dir.glob("*.csv"))
+        raw_precheck_skipped_no_source = False
+        expected_files = None
         if not source_csv_paths:
             logger.info(f"skip precheck: no csv files found in {self.source_dir}, start downloading directly")
+            raw_precheck_skipped_no_source = True
             self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
-        elif self._is_raw_source_up_to_date(end_date, stale_ratio=stale_ratio):
-            logger.info(f"skip download: source csv files are already up-to-date for end_date={end_date}")
         else:
+            expected_files = self._get_expected_symbol_csv_files()
+        if expected_files and self._is_raw_source_up_to_date(
+            end_date, stale_ratio=stale_ratio, expected_files=expected_files
+        ):
+            logger.info(f"skip download: source csv files are already up-to-date for end_date={end_date}")
+        elif not raw_precheck_skipped_no_source:
             self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
         # NOTE: a larger max_workers setting here would be faster
         self.max_workers = (
@@ -1042,6 +1055,13 @@ class Run(BaseRun):
         )
         # normalize data
         self.normalize_data_1d_extend(qlib_data_1d_dir)
+        # normalize precheck before dump (skip if raw precheck was skipped due to empty source dir)
+        if raw_precheck_skipped_no_source:
+            logger.info("skip normalized precheck: raw precheck was skipped because source csv dir was empty")
+        else:
+            if expected_files is None:
+                expected_files = self._get_expected_symbol_csv_files()
+            self._precheck_normalized_source(end_date=end_date, stale_ratio=stale_ratio, expected_files=expected_files)
 
         # dump bin
         _dump = DumpDataUpdate(
@@ -1104,18 +1124,7 @@ class Run(BaseRun):
             return None
         return dict(zip(headers, values))
 
-    def _is_raw_source_up_to_date(self, end_date: str, stale_ratio: float = 0.001) -> bool:
-        if self.interval.lower() != "1d":
-            return False
-
-        required_ohlcv = ["open", "high", "low", "close", "volume"]
-        target_last_date = (pd.Timestamp(end_date) - pd.Timedelta(days=1)).date()
-        csv_paths = list(self.source_dir.glob("*.csv"))
-        if not csv_paths:
-            logger.info("raw csv check: source_dir has no csv files")
-            return False
-
-        # use the collector's current instrument list as the completeness baseline
+    def _get_expected_symbol_csv_files(self) -> set:
         collector_cls = getattr(self._cur_module, self.collector_class_name)
         collector = collector_cls(
             save_dir=self.source_dir,
@@ -1126,9 +1135,23 @@ class Run(BaseRun):
             check_data_length=None,
             limit_nums=None,
         )
-        expected_files = {
-            f"{code_to_fname(collector.normalize_symbol(symbol))}.csv" for symbol in collector.instrument_list
-        }
+        return {f"{code_to_fname(collector.normalize_symbol(symbol))}.csv" for symbol in collector.instrument_list}
+
+    def _is_raw_source_up_to_date(
+        self, end_date: str, stale_ratio: float = 0.001, expected_files: set = None
+    ) -> bool:
+        if self.interval.lower() != "1d":
+            return False
+
+        required_ohlcv = ["open", "high", "low", "close", "volume"]
+        target_last_date = (pd.Timestamp(end_date) - pd.Timedelta(days=1)).date()
+        csv_paths = list(self.source_dir.glob("*.csv"))
+        if not csv_paths:
+            logger.info("raw csv check: source_dir has no csv files")
+            return False
+
+        if expected_files is None:
+            expected_files = self._get_expected_symbol_csv_files()
         existing_files = {path.name for path in csv_paths}
         missing_files = expected_files - existing_files
         lagging_symbols = {Path(name).stem.upper() for name in missing_files}
@@ -1184,12 +1207,68 @@ class Run(BaseRun):
             f"(> {ratio_pct:.4f}%). symbols: {lagging_text}{reset}"
         )
         confirm = input(
-            f"More than {ratio_pct:.4f}% source csv files are stale. Type 'yes' to continue or 'no' to stop: "
+            f"More than {ratio_pct:.4f}% source csv files are stale. "
+            "Type 'yes' to continue with existing files, or 'no' to re-download all raw csv files: "
         )
         if str(confirm).strip().lower() == "yes":
             logger.warning(f"{yellow}continue by user confirmation with stale source csv files.{reset}")
             return True
-        raise RuntimeError(f"stopped by user: stale source csv ratio is greater than {ratio_pct:.4f}%")
+        logger.warning(f"{yellow}user chose to re-download all raw csv files.{reset}")
+        return False
+
+    def _precheck_normalized_source(self, end_date: str, stale_ratio: float = 0.001, expected_files: set = None):
+        if self.interval.lower() != "1d":
+            return
+
+        required_columns = ["date", "symbol", "open", "high", "low", "close", "volume", "adjclose", "change", "factor"]
+        target_last_date = (pd.Timestamp(end_date) - pd.Timedelta(days=1)).date()
+        if expected_files is None:
+            expected_files = self._get_expected_symbol_csv_files()
+
+        abnormal_symbols = set()
+        for file_name in tqdm(sorted(expected_files), desc="Normalized CSV Precheck"):
+            csv_path = self.normalize_dir.joinpath(file_name)
+            if not csv_path.exists():
+                abnormal_symbols.add(Path(file_name).stem.upper())
+                continue
+            try:
+                df = pd.read_csv(csv_path)
+            except Exception:
+                abnormal_symbols.add(csv_path.stem.upper())
+                continue
+
+            if df.empty:
+                abnormal_symbols.add(csv_path.stem.upper())
+                continue
+            if not all(col in df.columns for col in required_columns):
+                abnormal_symbols.add(csv_path.stem.upper())
+                continue
+            if df[required_columns].isnull().all().any():
+                abnormal_symbols.add(csv_path.stem.upper())
+                continue
+
+            date_series = df["date"].astype(str).str.extract(r"(\d{4}-\d{2}-\d{2})", expand=False)
+            parsed_date = pd.to_datetime(date_series, format="%Y-%m-%d", errors="coerce")
+            latest_date = None if parsed_date.isna().all() else parsed_date.max().date()
+            if latest_date is None or latest_date < target_last_date:
+                abnormal_symbols.add(csv_path.stem.upper())
+
+        if not abnormal_symbols:
+            logger.info("normalized csv check: all files look up-to-date and structurally valid")
+            return
+
+        total_count = max(len(expected_files), 1)
+        abnormal_count = len(abnormal_symbols)
+        abnormal_ratio = abnormal_count / total_count
+        symbols_text = ",".join(sorted(abnormal_symbols))
+        yellow = "\033[33m"
+        reset = "\033[0m"
+        ratio_pct = stale_ratio * 100
+        ratio_text = "<=" if abnormal_ratio <= stale_ratio else ">"
+        logger.warning(
+            f"{yellow}normalized csv check: {abnormal_count}/{total_count} abnormal symbols ({ratio_text} {ratio_pct:.4f}% threshold). "
+            f"continue to dump. symbols: {symbols_text}{reset}"
+        )
 
 
 if __name__ == "__main__":

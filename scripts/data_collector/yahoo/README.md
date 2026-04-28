@@ -175,23 +175,36 @@ pip install -r requirements.txt
 
   * Manual update of data
       ```
-      python scripts/data_collector/yahoo/collector.py update_data_to_bin --qlib_data_1d_dir <user data dir> --end_date <end date>
+      python scripts/data_collector/yahoo/collector.py update_data_to_bin --qlib_data_1d_dir <user data dir> --trading_date <start date> --end_date <end date>
       ```
+      * `trading_date`: start date (included). If omitted, start date is inferred from `calendars/day.txt` as `(last_calendar_day - 1 day)`
       * `end_date`: end of trading day(not included)
       * `check_data_length`: check the number of rows per *symbol*, by default `None`
         > if `len(symbol_df) < check_data_length`, it will be re-fetched, with the number of re-fetches coming from the `max_collector_count` parameter
       * `stale_ratio`: threshold for stale source csv ratio, by default `0.001` (`0.1%`)
-        > if stale ratio `<= stale_ratio`, continue automatically;
-        > if stale ratio `> stale_ratio`, the program asks for confirmation (`yes`/`no`)
+        > shared threshold used by both raw csv precheck and normalized csv precheck
 
   * Built-in precheck behavior (`update_data_to_bin`)
-      * If no csv file exists in `source_dir`, precheck is skipped and the program downloads data directly.
-      * If csv files exist, the precheck scans files with a progress bar and validates:
+      * Raw csv precheck (before download):
+        * If no csv file exists in `source_dir`, raw precheck is skipped and the program downloads data directly.
+        * If csv files exist, the precheck scans files with a progress bar (`Raw CSV Precheck`) and validates:
         * no missing symbol csv files
         * required columns `open, high, low, close, volume` exist and contain no missing values
         * `factor` column exists and is not completely empty
         * each csv latest date is up-to-date to `end_date` (`latest_date >= end_date - 1 day`)
-      * If precheck passes, the Yahoo download step is skipped.
+        * if abnormal ratio `<= stale_ratio`, continue automatically
+        * if abnormal ratio `> stale_ratio`, asks for confirmation:
+        * type `yes` to continue with existing raw csv files
+        * type `no` to re-download all raw csv files
+        * if precheck passes, the Yahoo download step is skipped; otherwise it enters download
+      * Normalized csv precheck (before dump):
+        * If raw precheck was skipped because `source_dir` has no csv files, normalized precheck is also skipped.
+        * Otherwise, the precheck scans normalized files with a progress bar (`Normalized CSV Precheck`) and validates:
+        * no missing normalized symbol csv files
+        * required columns `date,symbol,open,high,low,close,volume,adjclose,change,factor` exist
+        * required columns are not completely empty
+        * each normalized csv latest date is up-to-date to `end_date` (`latest_date >= end_date - 1 day`)
+        * if abnormal ratio is above or below `stale_ratio`, it only logs warning and always continues (no prompt)
 
   * `scripts/data_collector/yahoo/collector.py update_data_to_bin` parameters:
       * `source_dir`: The directory where raw csv data is saved.
@@ -199,10 +212,11 @@ pip install -r requirements.txt
       * `normalize_dir`: Directory for normalized csv output.
         > In `update_data_to_bin`, if not explicitly set, it defaults to `<qlib_data_1d_dir>/metadata/normalize`
       * `qlib_data_1d_dir`: the qlib data to be updated for yahoo, usually from: [download qlib data](https://github.com/microsoft/qlib/tree/main/scripts#download-cn-data)
+      * `trading_date`: start date (included). If omitted, it is auto-derived from qlib calendar (`last_calendar_day - 1 day`)
       * `end_date`: end datetime, default ``pd.Timestamp(trading_date + pd.Timedelta(days=1))``; open interval(excluding end)
       * `region`: region, value from ["CN", "US"], default "CN"
       * `interval`: interval, default "1d"(Currently only supports 1d data)
-      * `stale_ratio`: stale source csv threshold in raw data download csv files' pre-check, default `0.001` (`0.1%`)
+      * `stale_ratio`: stale ratio threshold shared by raw/normalized prechecks, default `0.001` (`0.1%`)
       * `exists_skip`: exists skip, by default False
 
 ## Using qlib data

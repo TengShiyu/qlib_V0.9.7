@@ -11,3 +11,4 @@ beautifulsoup4
 bs4
 soupsieve
 akshare
+fake-useragent
