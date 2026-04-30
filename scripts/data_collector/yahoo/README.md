@@ -2,6 +2,7 @@
 - [Collector Data](#collector-data)
   - [Get Qlib data](#get-qlib-databin-file)
   - [Collector *YahooFinance* data to qlib](#collector-yahoofinance-data-to-qlib)
+  - [Collector assigned YahooFinance symbols to qlib](#collector-assigned-yahoofinance-symbols-to-qlib)
   - [Automatic update of daily frequency data](#automatic-update-of-daily-frequency-datafrom-yahoo-finance)
 - [Using qlib data](#using-qlib-data)
 
@@ -157,6 +158,113 @@ pip install -r requirements.txt
        # dump 1min cn
        python dump_bin.py dump_all --data_path ~/.qlib/stock_data/source/cn_1min_nor --qlib_dir ~/.qlib/qlib_data/cn_data_1min --freq 1min --exclude_fields date,symbol --file_suffix .csv
        ```
+
+### Collector assigned *YahooFinance* symbols to qlib
+> `collector_symbol.py` follows the same Yahoo collector, normalizer, and dump workflow as `collector.py`, but limits download and normalization to symbols assigned by `--symbols`.
+
+  1. default folder structure
+
+     The default qlib data root for this script is `/mnt/hdd/qlib_data/us_data_symbol`.
+
+     ```text
+     /mnt/hdd/qlib_data/us_data_symbol/
+       calendars/
+       features/
+       instruments/
+       metadata/
+         normalize/
+         source/
+     ```
+
+     By default:
+     - raw Yahoo csv files are saved to `/mnt/hdd/qlib_data/us_data_symbol/metadata/source`
+     - normalized csv files are saved to `/mnt/hdd/qlib_data/us_data_symbol/metadata/normalize`
+     - dumped qlib data is written under `/mnt/hdd/qlib_data/us_data_symbol`
+
+     If `--source_dir /mnt/hdd/qlib_data/us_data_symbol` is passed, the script treats it as the qlib root and still writes raw csv files to `metadata/source`.
+
+     If `update_data_to_bin` is called with another `--qlib_data_1d_dir` and `source_dir` or `normalize_dir` are not explicitly set, the script uses that qlib directory's `metadata/source` and `metadata/normalize` folders.
+
+  2. download assigned symbols to csv
+
+     - command: `python scripts/data_collector/yahoo/collector_symbol.py download_data`
+     - extra parameter:
+          - `symbols`: required for symbol-specific operations; accepts comma-separated or space-separated Yahoo symbols, for example `AAPL,MSFT` or `AAPL MSFT`
+     - inherited parameters:
+          - `source_dir`: csv directory, by default `/mnt/hdd/qlib_data/us_data_symbol/metadata/source`
+          - `interval`: `1d` or `1min`, by default `1d`
+          - `region`: `CN` or `US` or `IN` or `BR`, by default `CN`
+          - `delay`: `time.sleep(delay)`, by default *0.5*
+          - `start`: start datetime, by default *"2000-01-01"*; *closed interval(including start)*
+          - `end`: end datetime, by default `pd.Timestamp(datetime.datetime.now() + pd.Timedelta(days=1))`; *open interval(excluding end)*
+          - `max_workers`: number of concurrent symbols, by default *1*
+          - `check_data_length`: check the number of rows per *symbol*, by default `None`
+          - `max_collector_count`: number of *"failed"* symbol retries, by default 2
+
+     - examples:
+       ```bash
+       # us 1d assigned symbols
+       python scripts/data_collector/yahoo/collector_symbol.py download_data --symbols AAL,AAPL,AXP,INTU,ISRG,MSFT --region US --start 2018-01-01 --end 2026-04-21
+
+       # same command with explicit qlib root; raw csv still goes to metadata/source
+       python scripts/data_collector/yahoo/collector_symbol.py download_data --symbols AAPL,MSFT --region US --source_dir /mnt/hdd/qlib_data/us_data_symbol --start 2018-01-01 --end 2026-04-21
+       ```
+
+  3. normalize assigned symbols
+
+     This normalizes only the assigned symbol csv files, instead of every csv file in `source_dir`.
+     If none of the assigned source csv files exist, normalization raises `FileNotFoundError`.
+     If only some assigned source csv files are missing, the missing files are logged and skipped.
+
+     - command: `python scripts/data_collector/yahoo/collector_symbol.py normalize_data`
+     - parameters:
+          - `symbols`: required unless provided as a global Fire argument before the command
+          - `source_dir`: csv directory, by default `/mnt/hdd/qlib_data/us_data_symbol/metadata/source`
+          - `normalize_dir`: result directory, by default `/mnt/hdd/qlib_data/us_data_symbol/metadata/normalize`
+          - `max_workers`: number of concurrent, by default *1*
+          - `interval`: `1d` or `1min`, by default `1d`
+            > if **`interval == 1min`**, `qlib_data_1d_dir` cannot be `None`
+          - `region`: `CN` or `US` or `IN` or `BR`, by default `CN`
+          - `date_field_name`: column *name* identifying time in csv files, by default `date`
+          - `symbol_field_name`: column *name* identifying symbol in csv files, by default `symbol`
+          - `end_date`: if not `None`, normalize the last date saved (*including end_date*); if `None`, it will ignore this parameter; by default `None`
+          - `qlib_data_1d_dir`: qlib directory(1d data)
+
+     - examples:
+       ```bash
+       # us 1d assigned symbols
+       python scripts/data_collector/yahoo/collector_symbol.py normalize_data --symbols AAL,AAPL,AXP,INTU,ISRG,MSFT --region US
+
+       # us 1min assigned symbols; qlib_data_1d_dir is required
+       python scripts/data_collector/yahoo/collector_symbol.py normalize_data --symbols AAPL,MSFT --region US --interval 1min --qlib_data_1d_dir /mnt/hdd/qlib_data/us_data_symbol
+       ```
+
+  4. dump assigned-symbol data to qlib format
+
+     `dump_bin.py` dumps the normalized csv files in `data_path`. To dump only selected symbols, make sure `metadata/normalize` contains only the selected normalized csv files, or use a separate `normalize_dir` for that symbol set.
+
+     ```bash
+     python scripts/dump_bin.py dump_all \
+       --data_path /mnt/hdd/qlib_data/us_data_symbol/metadata/normalize \
+       --qlib_dir /mnt/hdd/qlib_data/us_data_symbol \
+       --freq day \
+       --exclude_fields date,symbol \
+       --file_suffix .csv
+     ```
+
+  5. update assigned-symbol data to bin
+
+     `collector_symbol.py update_data_to_bin` keeps the same assigned-symbol download, normalize, precheck, and dump flow as `collector.py update_data_to_bin`, but skips full-market index instrument parsing such as `SP500`, `NASDAQ100`, `DJIA`, and `SP400`. This is intentional because an assigned-symbol dataset does not contain the full market universe.
+     If `qlib_data_1d_dir` does not already contain a valid qlib dataset, the command follows the inherited collector behavior and bootstraps qlib data with `GetData().qlib_data(...)` before applying the assigned-symbol update.
+
+     ```bash
+     python scripts/data_collector/yahoo/collector_symbol.py update_data_to_bin \
+       --symbols AAL,AAPL,AXP,INTU,ISRG,MSFT \
+       --region US \
+       --qlib_data_1d_dir /mnt/hdd/qlib_data/us_data_symbol \
+       --trading_date 2026-04-20 \
+       --end_date 2026-04-21
+     ```
 
 ### Automatic update of daily frequency data(from yahoo finance)
   > It is recommended that users update the data manually once and then set it to update automatically.
