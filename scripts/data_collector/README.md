@@ -45,10 +45,11 @@ Scripts for data collection
   |------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------|
   | Features    | **Price/Volume**: <br>&nbsp;&nbsp; - $close/$open/$low/$high/$volume/$change/$factor                             |
   | Calendar    | **\<freq>.txt**: <br>&nbsp;&nbsp; - day.txt<br>&nbsp;&nbsp;  - 1min.txt                                          |
-  | Instruments | **\<market>.txt**: <br>&nbsp;&nbsp; - required: **all.txt**; <br>&nbsp;&nbsp;  - csi300.txt/csi500.txt/sp500.txt |
+  | Instruments | **\<market>.txt**: <br>&nbsp;&nbsp; - required: **all.txt**; <br>&nbsp;&nbsp;  - csi300.txt/csi500.txt/sp500.txt/nasdaq100.txt<br>&nbsp;&nbsp; - US execution universe: **tradable_us.txt** |
 
   - `Features`: data, **digital**
     - if not **adjusted**, **factor=1**
+  - `tradable_us.txt`: generated for US data by merging `all.txt`, `sp500.txt`, `nasdaq100.txt`, `djia.txt`, and `sp400.txt` when those files exist. It is intended for `exchange_kwargs.codes` in backtests, not as the model prediction `market`.
 
 ### Data-dependent component
 

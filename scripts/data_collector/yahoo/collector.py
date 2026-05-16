@@ -40,6 +40,7 @@ from data_collector.utils import (
     get_br_stock_symbols,
     generate_minutes_calendar_from_daily,
     calc_adjusted_price,
+    generate_merged_instruments,
 )
 
 INDEX_BENCH_URL = "http://push2his.eastmoney.com/api/qt/stock/kline/get?secid=1.{index_code}&fields1=f1%2Cf2%2Cf3%2Cf4%2Cf5&fields2=f51%2Cf52%2Cf53%2Cf54%2Cf55%2Cf56%2Cf57%2Cf58&klt=101&fqt=0&beg={begin}&end={end}"
@@ -1044,6 +1045,29 @@ class Run(BaseRun):
         )
         for _index in index_list:
             get_instruments(str(qlib_data_1d_dir), _index, market_index=f"{_region}_index")
+        if _region == "us":
+            generate_merged_instruments(
+                qlib_data_path=qlib_data_1d_dir,
+                output_name="tradable_us",
+                source_names=("all", "sp500", "nasdaq100", "djia", "sp400"),
+            )
+
+    @staticmethod
+    def generate_tradable_instruments(
+        qlib_data_1d_dir: str,
+        output_name: str = "tradable_us",
+        source_names: str = "all,sp500,nasdaq100,djia,sp400",
+    ):
+        """Generate a merged instrument universe for exchange execution.
+
+        This is useful after manual dump/index-update workflows that do not run
+        the full update_data_to_bin orchestration.
+        """
+        return generate_merged_instruments(
+            qlib_data_path=qlib_data_1d_dir,
+            output_name=output_name,
+            source_names=tuple(name.strip() for name in source_names.split(",") if name.strip()),
+        )
 
 
 if __name__ == "__main__":
