@@ -506,7 +506,12 @@ class YahooNormalize1d(YahooNormalize, ABC):
         -----
             For incremental updates(append) to Yahoo 1D data, user need to use a close that is not 0 on the first trading day of the existing data
         """
-        df = df.loc[df["close"].first_valid_index() :]
+        first_valid_index = df["close"].first_valid_index()
+        if first_valid_index is None:
+            symbol = df[self._symbol_field_name].iloc[0] if self._symbol_field_name in df.columns and not df.empty else "unknown"
+            logger.warning(f"skip normalize {symbol}: no valid close values")
+            return np.nan
+        df = df.loc[first_valid_index:]
         _close = df["close"].iloc[0]
         return _close
 
@@ -518,6 +523,8 @@ class YahooNormalize1d(YahooNormalize, ABC):
         df.sort_values(self._date_field_name, inplace=True)
         df = df.set_index(self._date_field_name)
         _close = self._get_first_close(df)
+        if pd.isna(_close) or _close == 0:
+            return pd.DataFrame(columns=df.reset_index().columns)
         for _col in df.columns:
             # NOTE: retain original adjclose, required for incremental updates
             if _col in [self._symbol_field_name, "adjclose", "change"]:
@@ -557,14 +564,23 @@ class YahooNormalize1dExtend(YahooNormalize1d):
 
     def normalize(self, df: pd.DataFrame) -> pd.DataFrame:
         df = super(YahooNormalize1dExtend, self).normalize(df)
+        if df is None or df.empty:
+            return df
         df.set_index(self._date_field_name, inplace=True)
-        symbol_name = df[self._symbol_field_name].iloc[0]
+        first_symbol_index = df[self._symbol_field_name].first_valid_index()
+        if first_symbol_index is None:
+            logger.warning("skip normalize extend: no valid symbol value")
+            return pd.DataFrame(columns=df.reset_index().columns)
+        symbol_name = df.loc[first_symbol_index, self._symbol_field_name]
         old_symbol_list = self.old_qlib_data.index.get_level_values("instrument").unique().to_list()
         if str(symbol_name).upper() not in old_symbol_list:
             return df.reset_index()
         old_df = self.old_qlib_data.loc[str(symbol_name).upper()]
         latest_date = old_df.index[-1]
         df = df.loc[latest_date:]
+        if df.empty:
+            logger.warning(f"skip normalize extend {symbol_name}: no data on or after old latest date {latest_date}")
+            return pd.DataFrame(columns=df.reset_index().columns)
         new_latest_data = df.iloc[0]
         old_latest_data = old_df.loc[latest_date]
         for col in self.column_list[:-1]:
@@ -1208,12 +1224,13 @@ class Run(BaseRun):
         )
         confirm = input(
             f"More than {ratio_pct:.4f}% source csv files are stale. "
-            "Type 'yes' to continue with existing files, or 'no' to re-download all raw csv files: "
+            "Type 'yes' to continue with existing raw CSVs, "
+            "or 'no' to re-download the update window for all symbols: "
         )
         if str(confirm).strip().lower() == "yes":
             logger.warning(f"{yellow}continue by user confirmation with stale source csv files.{reset}")
             return True
-        logger.warning(f"{yellow}user chose to re-download all raw csv files.{reset}")
+        logger.warning(f"{yellow}user chose to re-download the update window for all symbols.{reset}")
         return False
 
     def _precheck_normalized_source(self, end_date: str, stale_ratio: float = 0.001, expected_files: set = None):

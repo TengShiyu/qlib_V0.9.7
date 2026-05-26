@@ -201,6 +201,8 @@ class DumpDataBase:
                 self.INSTRUMENTS_START_FIELD,
                 self.INSTRUMENTS_END_FIELD,
             ],
+            dtype={self.symbol_field_name: str},
+            keep_default_na=False,
         )
 
         return df

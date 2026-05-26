@@ -6,6 +6,7 @@ import abc
 import time
 import datetime
 import importlib
+import traceback
 from pathlib import Path
 from typing import Type, Iterable
 from concurrent.futures import ProcessPoolExecutor
@@ -305,7 +306,13 @@ class Normalize:
             return
 
         # NOTE: It has been reported that there may be some problems here, and the specific issues will be dealt with when they are identified.
-        df = self._normalize_obj.normalize(df)
+        try:
+            df = self._normalize_obj.normalize(df)
+        except Exception:
+            yellow = "\033[33m"
+            reset = "\033[0m"
+            logger.warning(f"{yellow}skip normalize failed source csv: {file_path}\n{traceback.format_exc()}{reset}")
+            return
         if df is not None and not df.empty:
             if self._end_date is not None:
                 _mask = pd.to_datetime(df[self._date_field_name]) <= pd.Timestamp(self._end_date)
