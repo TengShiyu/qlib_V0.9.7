@@ -1,6 +1,6 @@
 import pandas as pd
 import pytest
-from qlib.contrib.strategy.cost_control import SoftTopkStrategy
+from qlib.contrib.strategy.cost_control import SoftTopkStrategy, SoftTopkStrategy_SMS
 
 
 class MockPosition:
@@ -9,6 +9,32 @@ class MockPosition:
 
     def get_stock_weight_dict(self, only_stock=True):
         return self.weights
+
+
+class MockCalendar:
+    def get_trade_step(self):
+        return 2
+
+    def get_step_time(self, trade_step, shift=0):
+        return f"start-{trade_step}-{shift}", f"end-{trade_step}-{shift}"
+
+
+class MockSignal:
+    def __init__(self, prev_score):
+        self.prev_score = prev_score
+
+    def get_signal(self, start_time=None, end_time=None):
+        return self.prev_score
+
+
+class MockLevelInfra:
+    def __init__(self, trade_calendar):
+        self.trade_calendar = trade_calendar
+
+    def get(self, key):
+        if key == "trade_calendar":
+            return self.trade_calendar
+        raise KeyError(key)
 
 
 def test_soft_topk_logic():
@@ -50,6 +76,44 @@ def test_soft_topk_logic():
     # C, D should reach ideal_per_stock (0.95/2 = 0.475)
     assert abs(res_c["C"] - 0.475) < 1e-8
     assert abs(res_c["D"] - 0.475) < 1e-8
+
+
+def test_soft_topk_sms_sells_signal_universe_exits():
+    scores = pd.Series({"B": 0.8, "C": 0.7})
+    prev_scores = pd.Series({"A": 0.9, "B": 0.8, "C": 0.7})
+    current_pos = MockPosition({"A": 0.4, "B": 0.2})
+
+    strat = SoftTopkStrategy_SMS.__new__(SoftTopkStrategy_SMS)
+    strat.topk = 2
+    strat.risk_degree = 0.95
+    strat.trade_impact_limit = 1.0
+    strat.level_infra = MockLevelInfra(MockCalendar())
+    strat.signal = MockSignal(prev_scores)
+
+    res = strat.generate_target_weight_position(scores, current_pos, None, None)
+
+    assert "A" not in res
+    assert abs(res["B"] - 0.475) < 1e-8
+    assert abs(res["C"] - 0.475) < 1e-8
+
+
+def test_soft_topk_sms_accepts_dataframe_scores():
+    scores = pd.DataFrame({"score": {"B": 0.8, "C": 0.7}})
+    prev_scores = pd.DataFrame({"score": {"A": 0.9, "B": 0.8, "C": 0.7}})
+    current_pos = MockPosition({"A": 0.4, "B": 0.2})
+
+    strat = SoftTopkStrategy_SMS.__new__(SoftTopkStrategy_SMS)
+    strat.topk = 2
+    strat.risk_degree = 0.90
+    strat.trade_impact_limit = 0.03
+    strat.level_infra = MockLevelInfra(MockCalendar())
+    strat.signal = MockSignal(prev_scores)
+
+    res = strat.generate_target_weight_position(scores, current_pos, None, None)
+
+    assert abs(res["A"] - 0.37) < 1e-8
+    assert abs(res["B"] - 0.23) < 1e-8
+    assert abs(res["C"] - 0.03) < 1e-8
 
 
 if __name__ == "__main__":
