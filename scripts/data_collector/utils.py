@@ -358,6 +358,56 @@ def get_us_stock_symbols(qlib_data_path: [str, Path] = None) -> list:
     return _US_SYMBOLS
 
 
+def generate_merged_instruments(
+    qlib_data_path: [str, Path],
+    output_name: str,
+    source_names: Iterable[str],
+) -> Path:
+    """Generate an instrument file by merging symbol date ranges from other instrument files.
+
+    For each symbol, the merged file keeps the earliest start date and latest end date
+    found across the source files. Missing source files are skipped.
+    """
+    instruments_dir = Path(qlib_data_path).expanduser().resolve().joinpath("instruments")
+    frames = []
+    used_sources = []
+    for source_name in source_names:
+        instrument_path = instruments_dir.joinpath(f"{source_name}.txt")
+        if not instrument_path.exists():
+            logger.warning(f"instrument file not found, skip merge source: {instrument_path}")
+            continue
+        ins_df = pd.read_csv(
+            instrument_path,
+            sep="\t",
+            names=["symbol", "start_date", "end_date"],
+            keep_default_na=False,
+        )
+        if ins_df.empty:
+            logger.warning(f"instrument file is empty, skip merge source: {instrument_path}")
+            continue
+        frames.append(ins_df)
+        used_sources.append(source_name)
+
+    if not frames:
+        raise ValueError(f"No instrument files found to generate {output_name}.txt")
+
+    merged_df = pd.concat(frames, ignore_index=True)
+    merged_df = merged_df[merged_df["symbol"].astype(str).str.len() > 0]
+    merged_df = (
+        merged_df.groupby("symbol", as_index=False)
+        .agg(start_date=("start_date", "min"), end_date=("end_date", "max"))
+        .sort_values("symbol")
+    )
+
+    output_path = instruments_dir.joinpath(f"{output_name}.txt")
+    merged_df.to_csv(output_path, sep="\t", header=False, index=False)
+    logger.info(
+        f"generated {output_path} from {used_sources}; "
+        f"symbols={merged_df['symbol'].nunique()}, rows={len(merged_df)}"
+    )
+    return output_path
+
+
 def get_in_stock_symbols(qlib_data_path: [str, Path] = None) -> list:
     """get IN stock symbols
 

@@ -61,6 +61,7 @@ class Rolling:
         test_end: Optional[str] = None,
         task_ext_conf: Optional[dict] = None,
         rolling_exp: Optional[str] = None,
+        rolling_type: str = RollingGen.ROLL_EX,
     ) -> None:
         """
         Parameters
@@ -87,6 +88,10 @@ class Rolling:
             The name for the experiments for rolling.
             It will contains a lot of record in an experiment. Each record corresponds to a specific rolling.
             Please note that it is different from the final experiments
+        rolling_type : str
+            Rolling window type used by RollingGen. Supported values are "ROLL_EX" and "ROLL_SD".
+            "ROLL_EX" fixes the train start and expands the train end, while "ROLL_SD" moves the
+            train window forward with a fixed window length.
         """
         self.logger = get_module_logger("Rolling")
         self.conf_path = Path(conf_path)
@@ -110,6 +115,7 @@ class Rolling:
         self.test_end = test_end
         self.task_ext_conf = task_ext_conf
         self.h_path = h_path
+        self.rolling_type = self._parse_rolling_type(rolling_type)
 
         # FIXME:
         # - the qlib_init section will be ignored by me.
@@ -119,6 +125,25 @@ class Rolling:
         with self.conf_path.open("r") as f:
             yaml = YAML(typ="safe", pure=True)
             return yaml.load(f)
+
+    @staticmethod
+    def _parse_rolling_type(rolling_type: str) -> str:
+        if rolling_type is None:
+            return RollingGen.ROLL_EX
+
+        normalized = rolling_type.lower()
+        rolling_type_map = {
+            "roll_ex": RollingGen.ROLL_EX,
+            RollingGen.ROLL_EX: RollingGen.ROLL_EX,
+            "roll_sd": RollingGen.ROLL_SD,
+            RollingGen.ROLL_SD: RollingGen.ROLL_SD,
+        }
+        if normalized not in rolling_type_map:
+            raise ValueError(
+                f"Unsupported rolling_type: {rolling_type}. "
+                "Please use one of: ROLL_EX, ROLL_SD."
+            )
+        return rolling_type_map[normalized]
 
     def _replace_handler_with_cache(self, task: dict):
         """
@@ -195,7 +220,7 @@ class Rolling:
         """return a batch of tasks for rolling."""
         task = self.basic_task()
         task_l = task_generator(
-            task, RollingGen(step=self.step, trunc_days=self.horizon + 1)
+            task, RollingGen(step=self.step, rtype=self.rolling_type, trunc_days=self.horizon + 1)
         )  # the last two days should be truncated to avoid information leakage
         for t in task_l:
             # when we rolling tasks. No further analyis is needed.

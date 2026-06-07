@@ -211,6 +211,7 @@ class FileInstrumentStorage(FileStorageMixin, InstrumentStorage):
             usecols=[0, 1, 2],
             names=[self.SYMBOL_FIELD_NAME, self.INSTRUMENT_START_FIELD, self.INSTRUMENT_END_FIELD],
             dtype={self.SYMBOL_FIELD_NAME: str},
+            keep_default_na=False,
             parse_dates=[self.INSTRUMENT_START_FIELD, self.INSTRUMENT_END_FIELD],
         )
         for row in df.itertuples(index=False):

@@ -4,6 +4,7 @@
 
 from .signal_strategy import (
     TopkDropoutStrategy,
+    TopkDropoutStrategy_SMS,
     WeightStrategyBase,
     EnhancedIndexingStrategy,
 )
@@ -14,14 +15,16 @@ from .rule_strategy import (
     SBBStrategyEMA,
 )
 
-from .cost_control import SoftTopkStrategy
+from .cost_control import SoftTopkStrategy, SoftTopkStrategy_SMS
 
 __all__ = [
     "TopkDropoutStrategy",
+    "TopkDropoutStrategy_SMS",
     "WeightStrategyBase",
     "EnhancedIndexingStrategy",
     "TWAPStrategy",
     "SBBStrategyBase",
     "SBBStrategyEMA",
     "SoftTopkStrategy",
+    "SoftTopkStrategy_SMS",
 ]

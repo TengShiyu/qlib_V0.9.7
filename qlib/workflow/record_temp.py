@@ -377,6 +377,9 @@ class PortAnaRecord(ACRecordTemp):
         risk_analysis_freq: Union[List, str] = None,
         indicator_analysis_freq: Union[List, str] = None,
         indicator_analysis_method=None,
+        log_daily_report_metrics=False,
+        daily_report_metric_prefix="portfolio",
+        daily_report_metric_columns=None,
         skip_existing=False,
         **kwargs,
     ):
@@ -393,6 +396,12 @@ class PortAnaRecord(ACRecordTemp):
             indicator analysis freq of report
         indicator_analysis_method : str, optional, default by None
             the candidate values include 'mean', 'amount_weighted', 'value_weighted'
+        log_daily_report_metrics : bool
+            whether to log each row of report_normal_<freq>.pkl as recorder metrics
+        daily_report_metric_prefix : str
+            metric name prefix when log_daily_report_metrics is enabled
+        daily_report_metric_columns : list, optional
+            report columns to log. If None, common portfolio report columns are logged.
         """
         super().__init__(recorder=recorder, skip_existing=skip_existing, **kwargs)
 
@@ -452,6 +461,21 @@ class PortAnaRecord(ACRecordTemp):
             "{0}{1}".format(*Freq.parse(_analysis_freq)) for _analysis_freq in indicator_analysis_freq
         ]
         self.indicator_analysis_method = indicator_analysis_method
+        self.log_daily_report_metrics = log_daily_report_metrics
+        self.daily_report_metric_prefix = daily_report_metric_prefix
+        if daily_report_metric_columns is None:
+            daily_report_metric_columns = [
+                "account",
+                "return",
+                "total_turnover",
+                "turnover",
+                "total_cost",
+                "cost",
+                "value",
+                "cash",
+                "bench",
+            ]
+        self.daily_report_metric_columns = daily_report_metric_columns
 
     def _get_report_freq(self, executor_config):
         ret_freq = []
@@ -461,6 +485,25 @@ class PortAnaRecord(ACRecordTemp):
         if "inner_executor" in executor_config["kwargs"]:
             ret_freq.extend(self._get_report_freq(executor_config["kwargs"]["inner_executor"]))
         return ret_freq
+
+    def _log_daily_report_metrics(self, report_normal: pd.DataFrame, freq: str):
+        if report_normal is None or report_normal.empty:
+            return
+
+        columns = [col for col in self.daily_report_metric_columns if col in report_normal.columns]
+        metric_prefix = f"{self.daily_report_metric_prefix}.{freq}"
+        for step, (_, row) in enumerate(report_normal.iterrows()):
+            metrics = {}
+            for col in columns:
+                value = row[col]
+                if pd.isna(value):
+                    continue
+                value = float(value)
+                if not np.isfinite(value):
+                    continue
+                metrics[f"{metric_prefix}.{col}"] = value
+            if metrics:
+                self.recorder.log_metrics(step=step, **metrics)
 
     def _generate(self, **kwargs):
         pred = self.load("pred.pkl")
@@ -491,6 +534,8 @@ class PortAnaRecord(ACRecordTemp):
         for _freq, (report_normal, positions_normal) in portfolio_metric_dict.items():
             artifact_objects.update({f"report_normal_{_freq}.pkl": report_normal})
             artifact_objects.update({f"positions_normal_{_freq}.pkl": positions_normal})
+            if self.log_daily_report_metrics:
+                self._log_daily_report_metrics(report_normal, _freq)
 
         for _freq, indicators_normal in indicator_dict.items():
             artifact_objects.update({f"indicators_normal_{_freq}.pkl": indicators_normal[0]})

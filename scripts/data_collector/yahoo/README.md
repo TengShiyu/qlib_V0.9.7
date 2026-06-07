@@ -266,6 +266,19 @@ pip install -r requirements.txt
        --end_date 2026-04-21
      ```
 
+### US index instruments and tradable universe
+
+For US daily data, update the index universe files after dumping data, then
+generate `tradable_us.txt` for use as `exchange_kwargs.codes`.
+
+     ```bash
+     python scripts/data_collector/us_index/collector.py --index_name SP500 --qlib_dir ~/.qlib/qlib_data/us_data --method parse_instruments
+     python scripts/data_collector/us_index/collector.py --index_name NASDAQ100 --qlib_dir ~/.qlib/qlib_data/us_data --method parse_instruments
+     python scripts/data_collector/us_index/collector.py --index_name DJIA --qlib_dir ~/.qlib/qlib_data/us_data --method parse_instruments
+     python scripts/data_collector/us_index/collector.py --index_name SP400 --qlib_dir ~/.qlib/qlib_data/us_data --method parse_instruments
+     python scripts/data_collector/yahoo/collector.py generate_tradable_instruments --qlib_data_1d_dir ~/.qlib/qlib_data/us_data
+     ```
+
 ### Automatic update of daily frequency data(from yahoo finance)
   > It is recommended that users update the data manually once and then set it to update automatically.
   >
@@ -286,6 +299,7 @@ pip install -r requirements.txt
       python scripts/data_collector/yahoo/collector.py update_data_to_bin --qlib_data_1d_dir <user data dir> --trading_date <start date> --end_date <end date>
       ```
       * `trading_date`: start date (included). If omitted, start date is inferred from `calendars/day.txt` as `(last_calendar_day - 1 day)`
+      * For US data, this command also refreshes the US index instrument files and regenerates `instruments/tradable_us.txt`.
       * `end_date`: end of trading day(not included)
       * `check_data_length`: check the number of rows per *symbol*, by default `None`
         > if `len(symbol_df) < check_data_length`, it will be re-fetched, with the number of re-fetches coming from the `max_collector_count` parameter

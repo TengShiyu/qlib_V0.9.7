@@ -29,6 +29,24 @@ python get_data.py qlib_data --target_dir ~/.qlib/qlib_data/cn_data_1min --regio
 python get_data.py qlib_data --target_dir ~/.qlib/qlib_data/us_data --region us
 ```
 
+`get_data.py qlib_data` does not generate `instruments/tradable_us.txt`. To
+create the merged US execution universe after downloading US data, run:
+
+```bash
+python scripts/data_collector/yahoo/collector.py generate_tradable_instruments --qlib_data_1d_dir ~/.qlib/qlib_data/us_data
+```
+
+The Yahoo data update flow also regenerates `tradable_us.txt` for US data.
+Use it for backtest execution when needed:
+
+```yaml
+market: nasdaq100
+port_analysis_config:
+  backtest:
+    exchange_kwargs:
+      codes: tradable_us
+```
+
 ### Download CN Simple Data
 
 ```bash
