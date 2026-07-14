@@ -149,6 +149,21 @@ class NASDAQ100Index(WIKIIndex):
     )
     MAX_WORKERS = 16
 
+    def get_new_companies(self):
+        logger.info(f"get new companies {self.index_name} ......")
+        local_calendar = self.instruments_dir.parent.joinpath("calendars", f"{self.freq}.txt")
+        if local_calendar.exists():
+            trade_dates = pd.to_datetime(pd.read_csv(local_calendar, header=None).iloc[:, 0]).tolist()
+        else:
+            trade_dates = list(self.calendar_list)
+        for trade_date in reversed(trade_dates[-10:]):
+            _df = self._request_history_companies(pd.Timestamp(trade_date), use_cache=False)
+            if not _df.empty and self.SYMBOL_FIELD_NAME in _df.columns:
+                _df = _df.loc[:, [self.SYMBOL_FIELD_NAME]].drop_duplicates()
+                _df = self.set_default_date_range(_df)
+                logger.info(f"end of get new companies {self.index_name} ......")
+                return _df
+
     def filter_df(self, df: pd.DataFrame) -> pd.DataFrame:
         if len(df) >= 100 and "Ticker" in df.columns:
             return df.loc[:, ["Ticker"]].copy()
@@ -232,10 +247,31 @@ class SP500Index(WIKIIndex):
         headers = {"User-Agent": self._ua.random}
         response = requests.get(self.WIKISP500_CHANGES_URL, headers=headers, timeout=None)
         response.raise_for_status()
-        changes_df = pd.read_html(StringIO(response.text))[-1]
-        changes_df = changes_df.iloc[:, [0, 1, 3]]
+        changes_df = None
+        for _df in pd.read_html(StringIO(response.text)):
+            if not isinstance(_df.columns, pd.MultiIndex):
+                continue
+            _columns = list(_df.columns)
+            _date_col = next((col for col in _columns if col[0] == "Effective Date"), None)
+            _add_col = next((col for col in _columns if col[0] == "Added" and col[1] == "Ticker"), None)
+            _remove_col = next((col for col in _columns if col[0] == "Removed" and col[1] == "Ticker"), None)
+            if _date_col is not None and _add_col is not None and _remove_col is not None:
+                changes_df = _df.loc[:, [_date_col, _add_col, _remove_col]]
+                break
+        if changes_df is None:
+            raise ValueError("Could not find S&P 500 changes table from Wikipedia")
         changes_df.columns = [self.DATE_FIELD_NAME, self.ADD, self.REMOVE]
         changes_df[self.DATE_FIELD_NAME] = pd.to_datetime(changes_df[self.DATE_FIELD_NAME])
+        calendar_limit = pd.to_datetime(max(self.calendar_list))
+        local_calendar = self.instruments_dir.parent.joinpath("calendars", f"{self.freq}.txt")
+        if local_calendar.exists():
+            local_dates = pd.read_csv(local_calendar, header=None).iloc[:, 0]
+            if not local_dates.empty:
+                calendar_limit = pd.to_datetime(local_dates.iloc[-1])
+        changes_df = changes_df.loc[
+            (changes_df[self.DATE_FIELD_NAME] >= self.bench_start_date)
+            & (changes_df[self.DATE_FIELD_NAME] <= calendar_limit)
+        ]
         _result = []
         for _type in [self.ADD, self.REMOVE]:
             _df = changes_df.copy()
