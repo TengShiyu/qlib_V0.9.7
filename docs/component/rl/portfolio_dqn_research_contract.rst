@@ -237,12 +237,57 @@ is sufficient for integration tests, deterministic baselines, and a technical
 DQN smoke run. It is not sufficient evidence for a robust learned investment
 policy.
 
+Engineering DQN Split
+=====================
+
+The first implementation milestone is an end-to-end runnable program. For
+that milestone only, the existing artifact is divided chronologically:
+
+.. list-table:: Engineering-only RL split
+   :header-rows: 1
+   :widths: 20 30 30 20
+
+   * - Purpose
+     - Start
+     - End
+     - Complete transitions
+   * - DQN training
+     - 2025-01-02
+     - 2025-09-30
+     - 92
+   * - DQN validation
+     - 2025-10-01
+     - 2025-12-31
+     - 31
+   * - DQN test
+     - 2026-01-02
+     - 2026-03-30
+     - 29
+
+The counts were measured from the combined prediction artifact and include
+only complete two-session transitions. Each split is an independent episode.
+A transition must not begin in one split and calculate its execution, return,
+or reward using dates from another split.
+
+This split is approved to demonstrate that the program can:
+
+* load real rolling predictions;
+* construct feasible portfolio actions;
+* run two-session transitions and calculate rewards;
+* train a small DQN without failing;
+* save and reload a checkpoint;
+* evaluate validation and test episodes;
+* produce a metrics report.
+
+The split is not approved as evidence that DQN is robust or profitable. Any
+reported results must be labelled as engineering or smoke-test results.
+
 RL Dataset Separation
 =====================
 
-The existing combined prediction artifact is approved for engineering
-integration only. It must not be reused simultaneously as the DQN training,
-model-selection, and final test dataset.
+The existing combined prediction artifact is approved for the chronological
+engineering split above. The three periods must remain isolated, and test
+results must not influence model fitting or checkpoint selection.
 
 Before formal DQN evaluation, the project must generate a longer chronological
 series of rolling out-of-sample predictions using the same upstream
