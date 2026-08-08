@@ -9,3 +9,5 @@ Reinforcement Learning in Quantitative Trading
     Overall <overall>
     Quick Start <quickstart>
     Framework <framework>
+    Portfolio DQN Workframe <portfolio_dqn_workframe>
+    Portfolio DQN Research Contract <portfolio_dqn_research_contract>
