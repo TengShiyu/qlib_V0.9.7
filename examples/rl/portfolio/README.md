@@ -100,10 +100,11 @@ observations.
 ```text
 qlib/rl/portfolio/
     action.py          discrete action definitions and target construction
-    state.py           typed simulator state
+    data.py            leakage-safe prediction and market-data alignment
     simulator.py       two-session portfolio transition logic
     interpreter.py     Qlib RL state/action adapters
     reward.py          net-return reward calculation
+    integration.py     Gym-compatible QlibRL environment assembly
     policy.py          DQN construction and configuration
 
 examples/rl/portfolio/
@@ -114,6 +115,8 @@ examples/rl/portfolio/
 
 tests/rl/portfolio/
     test_action.py
+    test_data.py
+    test_integration.py
     test_reward.py
     test_simulator.py
 ```
@@ -121,6 +124,24 @@ tests/rl/portfolio/
 Data preparation must remain separate from the simulator. The simulator
 receives validated arrays or tables and must not load arbitrary files or train
 models internally.
+
+## Phase 4 environment interface
+
+`make_portfolio_env(data)` assembles the portfolio simulator, fixed-size state
+interpreter, discrete action interpreter, and net-return reward with QlibRL's
+`EnvWrapper`. The resulting Gym interface has:
+
+- `Discrete(8)` actions with the stable IDs documented above;
+- a 49-value `float32` observation;
+- one scalar net two-session return per step;
+- one independent episode for the supplied chronological data split.
+
+The observation contains 17 global features describing portfolio exposure,
+recent realized portfolio returns, tradability, and cross-sectional score and
+volatility summaries. It also contains four predicted properties for each of
+the eight candidate portfolios: equity exposure, turnover, score exposure,
+and diagonal volatility. Realized forward asset returns are outcomes owned by
+the simulator and are never passed to the state interpreter.
 
 ## Milestone 1 acceptance criteria
 

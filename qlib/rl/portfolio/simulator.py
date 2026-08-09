@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
+
+from qlib.rl.simulator import Simulator
 
 from .action import PortfolioAction, PortfolioActionConfig, PortfolioTarget, build_target_weights
 from .data import PortfolioDataSplit
@@ -49,6 +51,11 @@ class PortfolioState:
     asset_weights: np.ndarray
     cash_weight: float
     done: bool
+    scores: np.ndarray
+    volatility: np.ndarray
+    tradable: np.ndarray
+    last_transition: Optional["PortfolioTransition"]
+    net_return_history: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -70,7 +77,7 @@ class PortfolioTransition:
     ending_cash_weight: float
 
 
-class PortfolioSimulator:
+class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, PortfolioAction]):
     """Apply discrete portfolio commands to one prepared data split."""
 
     def __init__(
@@ -83,17 +90,22 @@ class PortfolioSimulator:
         self.config = config
         self.action_config = action_config
         self._validate_transition_chain()
+        self._last_transition: Optional[PortfolioTransition] = None
+        self._net_return_history: list[float] = []
         self._state = self._initial_state()
 
     def reset(self) -> PortfolioState:
         """Reset the episode to an all-cash portfolio."""
 
+        self._last_transition = None
+        self._net_return_history = []
         self._state = self._initial_state()
         return self.get_state()
 
     def get_state(self) -> PortfolioState:
         """Return a defensive copy of the current state."""
 
+        observation_step = min(self._state.step, len(self.data.decision_dates) - 1)
         return PortfolioState(
             step=self._state.step,
             date=self._state.date,
@@ -101,7 +113,17 @@ class PortfolioSimulator:
             asset_weights=self._state.asset_weights.copy(),
             cash_weight=self._state.cash_weight,
             done=self._state.done,
+            scores=self.data.scores[observation_step].copy(),
+            volatility=self.data.volatility[observation_step].copy(),
+            tradable=self.data.execution_tradable[observation_step].copy(),
+            last_transition=self._last_transition,
+            net_return_history=np.asarray(self._net_return_history, dtype=np.float64),
         )
+
+    def done(self) -> bool:
+        """Return whether all transitions in this episode have been consumed."""
+
+        return self._state.done
 
     def step(self, action: Union[PortfolioAction, int]) -> PortfolioTransition:
         """Execute one action and advance through its two-session return."""
@@ -144,16 +166,7 @@ class PortfolioSimulator:
         next_step = step + 1
         done = next_step == len(self.data.decision_dates)
         next_date = self.data.reward_end_dates[step]
-        self._state = PortfolioState(
-            step=next_step,
-            date=next_date,
-            portfolio_value=ending_value,
-            asset_weights=ending_assets,
-            cash_weight=ending_cash,
-            done=done,
-        )
-
-        return PortfolioTransition(
+        transition = PortfolioTransition(
             action=resolved_action,
             decision_date=self.data.decision_dates[step],
             execution_date=self.data.execution_dates[step],
@@ -168,6 +181,23 @@ class PortfolioSimulator:
             ending_asset_weights=ending_assets.copy(),
             ending_cash_weight=ending_cash,
         )
+        self._last_transition = transition
+        self._net_return_history.append(reward.net_return)
+        self._state = PortfolioState(
+            step=next_step,
+            date=next_date,
+            portfolio_value=ending_value,
+            asset_weights=ending_assets,
+            cash_weight=ending_cash,
+            done=done,
+            scores=np.empty(0, dtype=np.float64),
+            volatility=np.empty(0, dtype=np.float64),
+            tradable=np.empty(0, dtype=np.bool_),
+            last_transition=transition,
+            net_return_history=np.asarray(self._net_return_history, dtype=np.float64),
+        )
+
+        return transition
 
     def _initial_state(self) -> PortfolioState:
         return PortfolioState(
@@ -177,6 +207,11 @@ class PortfolioSimulator:
             asset_weights=np.zeros(len(self.data.instruments), dtype=np.float64),
             cash_weight=1.0,
             done=False,
+            scores=np.empty(0, dtype=np.float64),
+            volatility=np.empty(0, dtype=np.float64),
+            tradable=np.empty(0, dtype=np.bool_),
+            last_transition=None,
+            net_return_history=np.empty(0, dtype=np.float64),
         )
 
     def _drift_weights(self, target: PortfolioTarget, reward: PortfolioReward) -> tuple[np.ndarray, float]:
