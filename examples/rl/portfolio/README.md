@@ -143,6 +143,35 @@ the eight candidate portfolios: equity exposure, turnover, score exposure,
 and diagonal volatility. Realized forward asset returns are outcomes owned by
 the simulator and are never passed to the state interpreter.
 
+## Phase 5 deterministic benchmarks
+
+Run the validation- and test-period engineering baselines from the dedicated
+environment:
+
+```bash
+conda run -n qlib_rl_env python examples/rl/portfolio/run_benchmarks.py
+```
+
+The command evaluates cash, hold, equal weight, 80% standard score weight,
+80% volatility-adjusted score weight, seeded random actions, and `^NDX`. It
+runs both the source experiment's zero-cost reproduction setting and a cost
+sensitivity that passes through `open_cost=0.0005`, `close_cost=0.0015`, and
+`min_cost=5`. Reports are written by default to
+`/home/shiyu/qlib_experiment/portfolio_dqn_baselines`, outside Git.
+
+Trading costs are not embedded in the runner. The reproduction run reads
+`account`, `benchmark`, `open_cost`, `close_cost`, and `min_cost` from the
+upstream workflow supplied with `--workflow-config`. The sensitivity run reads
+the same fields from `workflow_config_portfolio_dqn_cost_sensitivity.yaml` or
+another file supplied with `--sensitivity-config`. `open_cost` maps to buy
+cost, `close_cost` maps to sell cost, and `min_cost` is the minimum dollar fee
+for each nonzero stock order.
+
+Returns are non-overlapping two-session returns, so annualization uses 126
+periods per year. Reported turnover is cumulative one-way turnover. The Sharpe
+ratio assumes a zero risk-free rate, and maximum drawdown includes the initial
+portfolio value.
+
 ## Milestone 1 acceptance criteria
 
 - All eight actions produce deterministic target portfolios.

@@ -4,6 +4,8 @@
 """Multi-asset portfolio reinforcement-learning components."""
 
 from .action import PortfolioAction, PortfolioActionConfig, PortfolioTarget, build_target_weights
+from .benchmark import BenchmarkResult, calculate_metrics, results_frame, run_required_benchmarks
+from .config import PortfolioWorkflowConfig, load_portfolio_workflow_config
 from .data import (
     ENGINEERING_SPLITS,
     DateRange,
@@ -21,6 +23,12 @@ __all__ = [
     "PortfolioActionConfig",
     "PortfolioTarget",
     "build_target_weights",
+    "BenchmarkResult",
+    "calculate_metrics",
+    "results_frame",
+    "run_required_benchmarks",
+    "PortfolioWorkflowConfig",
+    "load_portfolio_workflow_config",
     "ENGINEERING_SPLITS",
     "DateRange",
     "PortfolioDataSplit",

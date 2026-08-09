@@ -25,6 +25,7 @@ class PortfolioSimulatorConfig:
     initial_value: float = 100_000.0
     buy_cost: float = 0.0
     sell_cost: float = 0.0
+    min_cost: float = 0.0
     missing_return_value: float = 0.0
     tolerance: float = 1e-8
 
@@ -35,6 +36,8 @@ class PortfolioSimulatorConfig:
             raise ValueError("buy_cost must be a finite non-negative value.")
         if not np.isfinite(self.sell_cost) or self.sell_cost < 0.0:
             raise ValueError("sell_cost must be a finite non-negative value.")
+        if not np.isfinite(self.min_cost) or self.min_cost < 0.0:
+            raise ValueError("min_cost must be a finite non-negative dollar amount.")
         if not np.isfinite(self.missing_return_value) or self.missing_return_value < -1.0:
             raise ValueError("missing_return_value must be finite and no less than -1.")
         if not np.isfinite(self.tolerance) or self.tolerance <= 0.0:
@@ -154,6 +157,8 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
             turnover=turnover,
             buy_cost=self.config.buy_cost,
             sell_cost=self.config.sell_cost,
+            min_cost=self.config.min_cost,
+            portfolio_value=starting_value,
             missing_return_value=self.config.missing_return_value,
             tolerance=self.config.tolerance,
         )

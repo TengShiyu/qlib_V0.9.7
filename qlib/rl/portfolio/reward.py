@@ -16,6 +16,8 @@ class PortfolioTurnover:
 
     buy: float
     sell: float
+    buy_orders: np.ndarray
+    sell_orders: np.ndarray
 
     @property
     def total(self) -> float:
@@ -54,9 +56,13 @@ def calculate_turnover(current_asset_weights: np.ndarray, target_asset_weights: 
         raise ValueError("Current and target asset weights must be non-negative.")
 
     difference = target - current
+    buy_orders = np.clip(difference, 0.0, None)
+    sell_orders = np.clip(-difference, 0.0, None)
     return PortfolioTurnover(
-        buy=float(np.clip(difference, 0.0, None).sum()),
-        sell=float(np.clip(-difference, 0.0, None).sum()),
+        buy=float(buy_orders.sum()),
+        sell=float(sell_orders.sum()),
+        buy_orders=buy_orders,
+        sell_orders=sell_orders,
     )
 
 
@@ -67,6 +73,8 @@ def calculate_portfolio_reward(
     turnover: PortfolioTurnover,
     buy_cost: float = 0.0,
     sell_cost: float = 0.0,
+    min_cost: float = 0.0,
+    portfolio_value: float = 1.0,
     missing_return_value: float = 0.0,
     tolerance: float = 1e-8,
 ) -> PortfolioReward:
@@ -89,6 +97,10 @@ def calculate_portfolio_reward(
         raise ValueError("Target asset and cash weights must sum to one.")
     if not np.isfinite(buy_cost) or buy_cost < 0.0 or not np.isfinite(sell_cost) or sell_cost < 0.0:
         raise ValueError("Transaction-cost rates must be finite and non-negative.")
+    if not np.isfinite(min_cost) or min_cost < 0.0:
+        raise ValueError("min_cost must be a finite non-negative dollar amount.")
+    if not np.isfinite(portfolio_value) or portfolio_value <= 0.0:
+        raise ValueError("portfolio_value must be positive and finite.")
     if not np.isfinite(missing_return_value) or missing_return_value < -1.0:
         raise ValueError("missing_return_value must be finite and no less than -1.")
 
@@ -99,7 +111,9 @@ def calculate_portfolio_reward(
     effective_returns = np.where(finite_returns, returns, missing_return_value)
     missing_return_weight = float(weights[~finite_returns].sum())
     gross_return = float(np.dot(weights, effective_returns))
-    transaction_cost = float(turnover.buy * buy_cost + turnover.sell * sell_cost)
+    buy_fees = _order_fees(turnover.buy_orders, portfolio_value, buy_cost, min_cost)
+    sell_fees = _order_fees(turnover.sell_orders, portfolio_value, sell_cost, min_cost)
+    transaction_cost = float((buy_fees.sum() + sell_fees.sum()) / portfolio_value)
     net_return = gross_return - transaction_cost
 
     return PortfolioReward(
@@ -109,3 +123,8 @@ def calculate_portfolio_reward(
         missing_return_weight=missing_return_weight,
         effective_asset_returns=effective_returns,
     )
+
+
+def _order_fees(order_weights: np.ndarray, portfolio_value: float, rate: float, min_cost: float) -> np.ndarray:
+    order_values = np.asarray(order_weights, dtype=np.float64) * portfolio_value
+    return np.where(order_values > 0.0, np.maximum(order_values * rate, min_cost), 0.0)

@@ -202,6 +202,14 @@ free. Formal evaluation must include a documented nonzero-cost sensitivity
 test. Costs must be calculated from executed turnover and charged exactly
 once.
 
+The runtime reads ``account``, ``open_cost``, ``close_cost``, and ``min_cost``
+from the selected workflow YAML. ``open_cost`` maps to the simulator's buy
+rate, ``close_cost`` maps to its sell rate, and ``min_cost`` is a dollar
+minimum applied separately to every nonzero stock order. The documented
+sensitivity workflow passes through ``open_cost=0.0005`` and
+``close_cost=0.0015`` as decimal cost ratios, with ``min_cost=5`` as the
+absolute minimum per stock order.
+
 Missing Data Accounting
 =======================
 

@@ -1,0 +1,11 @@
+qlib_init:
+    provider_uri: "/mnt/hdd/qlib_data/us_data"
+    region: us
+port_analysis_config:
+    backtest:
+        account: 100000
+        benchmark: ^NDX
+        exchange_kwargs:
+            open_cost: 0.0005
+            close_cost: 0.0015
+            min_cost: 5

@@ -44,6 +44,21 @@ class PortfolioRewardTest(unittest.TestCase):
         self.assertAlmostEqual(reward.missing_return_weight, 0.4)
         np.testing.assert_allclose(reward.effective_asset_returns, [0.1, 0.0])
 
+    def test_minimum_dollar_cost_is_applied_per_stock_order(self) -> None:
+        turnover = calculate_turnover(np.zeros(2), np.array([0.01, 0.02]))
+        reward = calculate_portfolio_reward(
+            target_asset_weights=np.array([0.01, 0.02]),
+            target_cash_weight=0.97,
+            asset_returns=np.zeros(2),
+            turnover=turnover,
+            buy_cost=0.0005,
+            min_cost=5.0,
+            portfolio_value=100_000.0,
+        )
+
+        self.assertAlmostEqual(reward.transaction_cost, 10.0 / 100_000.0)
+        self.assertAlmostEqual(reward.net_return, -10.0 / 100_000.0)
+
     def test_return_below_total_loss_is_rejected(self) -> None:
         turnover = calculate_turnover(np.zeros(1), np.ones(1))
 
