@@ -164,9 +164,7 @@ def build_portfolio_data_split(
     if trading_calendar.empty:
         raise ValueError("calendar must contain at least one trading date.")
 
-    split_calendar = trading_calendar[
-        (trading_calendar >= date_range.start) & (trading_calendar <= date_range.end)
-    ]
+    split_calendar = trading_calendar[(trading_calendar >= date_range.start) & (trading_calendar <= date_range.end)]
     if len(split_calendar) < 4:
         raise ValueError("A split needs at least four trading dates for one complete transition.")
 

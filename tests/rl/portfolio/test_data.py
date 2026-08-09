@@ -15,14 +15,10 @@ class PortfolioDataTest(unittest.TestCase):
     def setUp(self) -> None:
         self.calendar = pd.bdate_range("2025-01-01", periods=12)
         self.instruments = ["BBB", "AAA"]
-        index = pd.MultiIndex.from_product(
-            [self.calendar, ["AAA", "BBB"]], names=["datetime", "instrument"]
-        )
+        index = pd.MultiIndex.from_product([self.calendar, ["AAA", "BBB"]], names=["datetime", "instrument"])
         self.predictions = pd.DataFrame({"score": np.arange(len(index), dtype=float)}, index=index)
 
-        market_index = pd.MultiIndex.from_product(
-            [self.calendar, ["AAA", "BBB"]], names=["datetime", "instrument"]
-        )
+        market_index = pd.MultiIndex.from_product([self.calendar, ["AAA", "BBB"]], names=["datetime", "instrument"])
         close = np.column_stack(
             [
                 np.arange(100.0, 112.0),
