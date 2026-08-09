@@ -15,8 +15,16 @@ from .data import (
 )
 from .integration import PortfolioNetReturnReward, make_portfolio_env
 from .interpreter import OBSERVATION_DIM, PortfolioActionInterpreter, PortfolioStateInterpreter
+from .policy import PortfolioDQNConfig, PortfolioDQNPolicy, PortfolioQNetwork, make_dqn_policy
 from .reward import PortfolioReward, PortfolioTurnover, calculate_portfolio_reward, calculate_turnover
 from .simulator import PortfolioSimulator, PortfolioSimulatorConfig, PortfolioState, PortfolioTransition
+from .training import (
+    PortfolioDQNTrainingResult,
+    evaluate_dqn,
+    load_dqn_checkpoint,
+    save_dqn_checkpoint,
+    train_dqn,
+)
 
 __all__ = [
     "PortfolioAction",
@@ -39,6 +47,10 @@ __all__ = [
     "OBSERVATION_DIM",
     "PortfolioActionInterpreter",
     "PortfolioStateInterpreter",
+    "PortfolioDQNConfig",
+    "PortfolioDQNPolicy",
+    "PortfolioQNetwork",
+    "make_dqn_policy",
     "PortfolioReward",
     "PortfolioTurnover",
     "calculate_portfolio_reward",
@@ -47,4 +59,9 @@ __all__ = [
     "PortfolioSimulatorConfig",
     "PortfolioState",
     "PortfolioTransition",
+    "PortfolioDQNTrainingResult",
+    "evaluate_dqn",
+    "load_dqn_checkpoint",
+    "save_dqn_checkpoint",
+    "train_dqn",
 ]

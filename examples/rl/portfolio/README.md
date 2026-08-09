@@ -172,6 +172,27 @@ periods per year. Reported turnover is cumulative one-way turnover. The Sharpe
 ratio assumes a zero risk-free rate, and maximum drawdown includes the initial
 portfolio value.
 
+## Phase 6 DQN engineering training
+
+Train the small Double-DQN model from the dedicated environment:
+
+```bash
+conda run -n qlib_rl_env python examples/rl/portfolio/train.py
+```
+
+The command trains on the engineering training split, selects the best epoch
+using validation total return only, saves and reloads the checkpoint, and then
+runs one test episode. The model receives 49 features and emits eight raw
+Q-values. Training uses replay sampling, linearly decayed epsilon-greedy
+exploration, a target network, Huber loss, gradient clipping, and fixed random
+seeds.
+
+By default, the checkpoint, training history, exact configuration, validation
+and test metrics, action frequencies, and transition audit are written to
+`/home/shiyu/qlib_experiment/portfolio_dqn_training`, outside Git. This short
+run is an engineering verification and not evidence of a robust learned
+investment strategy.
+
 ## Milestone 1 acceptance criteria
 
 - All eight actions produce deterministic target portfolios.
