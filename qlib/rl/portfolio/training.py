@@ -128,11 +128,14 @@ def evaluate_dqn(
                 "execution_date": transition.execution_date,
                 "reward_end_date": transition.reward_end_date,
                 "action": action_name,
+                "gross_return": transition.reward.gross_return,
                 "net_return": reward,
                 "portfolio_value": transition.ending_value,
                 "turnover": transition.turnover.one_way,
                 "transaction_cost": transition.reward.transaction_cost,
                 "cash_exposure": transition.target.cash_weight,
+                "max_asset_weight": float(transition.target.asset_weights.max(initial=0.0)),
+                "asset_hhi": float(np.square(transition.target.asset_weights).sum()),
                 "missing_return_weight": transition.reward.missing_return_weight,
             }
         )

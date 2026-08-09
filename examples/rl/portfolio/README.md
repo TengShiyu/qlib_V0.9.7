@@ -143,7 +143,7 @@ the eight candidate portfolios: equity exposure, turnover, score exposure,
 and diagonal volatility. Realized forward asset returns are outcomes owned by
 the simulator and are never passed to the state interpreter.
 
-## Phase 5 deterministic benchmarks
+## Phase 5 market benchmark
 
 Run the validation- and test-period engineering baselines from the dedicated
 environment:
@@ -152,20 +152,14 @@ environment:
 conda run -n qlib_rl_env python examples/rl/portfolio/run_benchmarks.py
 ```
 
-The command evaluates cash, hold, equal weight, 80% standard score weight,
-80% volatility-adjusted score weight, seeded random actions, and `^NDX`. It
-runs both the source experiment's zero-cost reproduction setting and a cost
-sensitivity that passes through `open_cost=0.0005`, `close_cost=0.0015`, and
-`min_cost=5`. Reports are written by default to
+The command evaluates only the configured `^NDX` market benchmark. Individual
+portfolio commands remain inside the DQN action space but are not standalone
+research strategies. Reports are written by default to
 `/home/shiyu/qlib_experiment/portfolio_dqn_baselines`, outside Git.
 
-Trading costs are not embedded in the runner. The reproduction run reads
-`account`, `benchmark`, `open_cost`, `close_cost`, and `min_cost` from the
-upstream workflow supplied with `--workflow-config`. The sensitivity run reads
-the same fields from `workflow_config_portfolio_dqn_cost_sensitivity.yaml` or
-another file supplied with `--sensitivity-config`. `open_cost` maps to buy
-cost, `close_cost` maps to sell cost, and `min_cost` is the minimum dollar fee
-for each nonzero stock order.
+The market index is a price-return reference and does not generate simulated
+stock orders or transaction costs. The DQN training and evaluation commands
+read their portfolio cost parameters from workflow configurations.
 
 Returns are non-overlapping two-session returns, so annualization uses 126
 periods per year. Reported turnover is cumulative one-way turnover. The Sharpe
@@ -192,6 +186,21 @@ and test metrics, action frequencies, and transition audit are written to
 `/home/shiyu/qlib_experiment/portfolio_dqn_training`, outside Git. This short
 run is an engineering verification and not evidence of a robust learned
 investment strategy.
+
+## Phase 7 engineering evaluation
+
+Compare the saved DQN checkpoint with the configured market benchmark:
+
+```bash
+conda run -n qlib_rl_env python examples/rl/portfolio/evaluate.py
+```
+
+The evaluation reuses the saved model without fitting it again and reads costs
+only from the workflow stored in the training record. It reports action
+persistence, market-regime behavior, gross and net returns, turnover, cash
+exposure, stock-weight concentration, drawdown, and action collapse. The
+Markdown report and audit CSVs are written
+to `/home/shiyu/qlib_experiment/portfolio_dqn_evaluation`, outside Git.
 
 ## Milestone 1 acceptance criteria
 

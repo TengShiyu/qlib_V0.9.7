@@ -57,11 +57,14 @@ def run_action_benchmark(
                 "execution_date": transition.execution_date,
                 "reward_end_date": transition.reward_end_date,
                 "action": selected.name,
+                "gross_return": transition.reward.gross_return,
                 "net_return": transition.reward.net_return,
                 "portfolio_value": transition.ending_value,
                 "turnover": transition.turnover.one_way,
                 "transaction_cost": transition.reward.transaction_cost,
                 "cash_exposure": transition.target.cash_weight,
+                "max_asset_weight": float(transition.target.asset_weights.max(initial=0.0)),
+                "asset_hhi": float(np.square(transition.target.asset_weights).sum()),
                 "missing_return_weight": transition.reward.missing_return_weight,
             }
         )
@@ -100,11 +103,14 @@ def run_market_benchmark(name: str, data: PortfolioDataSplit, close: pd.Series) 
             "execution_date": data.execution_dates,
             "reward_end_date": data.reward_end_dates,
             "action": name,
+            "gross_return": returns,
             "net_return": returns,
             "portfolio_value": values,
             "turnover": np.zeros(len(returns)),
             "transaction_cost": np.zeros(len(returns)),
             "cash_exposure": np.zeros(len(returns)),
+            "max_asset_weight": np.ones(len(returns)),
+            "asset_hhi": np.ones(len(returns)),
             "missing_return_weight": np.zeros(len(returns)),
         }
     )

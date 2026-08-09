@@ -11,7 +11,7 @@ The strategy rebalances every two trading sessions over a configured stock
 universe.
 
 The first objective is a correct, reproducible simulation. Profitability is
-evaluated only after the data, portfolio accounting, and baseline strategies
+evaluated only after the data, portfolio accounting, and market comparison
 have been verified.
 
 Target System
@@ -225,28 +225,22 @@ Deliverables
 * QlibRL environment configuration.
 * A random-policy episode smoke test.
 
-Phase 5: Deterministic Benchmarks
-================================
+Phase 5: Market Benchmark
+=========================
 
-Evaluate the action rules directly before training DQN. Required benchmarks
-include:
-
-* cash;
-* equal weight;
-* standard score weight;
-* volatility-adjusted score weight;
-* hold;
-* random action selection;
-* the configured market benchmark where appropriate.
+Establish the configured market index as the sole standalone comparison
+strategy before training DQN. Individual portfolio commands remain components
+of the DQN action space but are not evaluated as independent research
+strategies.
 
 Report at least annualized return, volatility, Sharpe ratio, maximum drawdown,
 turnover, transaction costs, and average cash exposure. These results establish
-whether the simulator and candidate actions behave sensibly.
+the market reference used for the DQN evaluation.
 
 Deliverable
 -----------
 
-A reproducible baseline report covering the validation and test periods.
+A reproducible market report covering the validation and test periods.
 
 Phase 6: DQN Training
 =====================
@@ -280,12 +274,12 @@ Deliverables
 Phase 7: Evaluation and Diagnosis
 =================================
 
-Compare the selected DQN checkpoint against every deterministic baseline on
-the untouched test period. In addition to portfolio metrics, inspect:
+Compare the selected DQN checkpoint against the configured market benchmark on
+the engineering test period. In addition to portfolio metrics, inspect:
 
 * frequency and persistence of every selected action;
 * performance by market regime;
-* sensitivity to transaction costs and slippage;
+* transaction costs and slippage configured by the selected workflow;
 * gross versus net performance;
 * turnover and exposure concentration;
 * drawdown behavior;
@@ -298,7 +292,7 @@ seeds and economically meaningful out-of-sample results.
 Deliverable
 -----------
 
-An out-of-sample evaluation report with diagnostics and baseline comparisons.
+An engineering evaluation report with DQN diagnostics and market comparison.
 
 Phase 8: Hardening and Extensions
 =================================
@@ -351,7 +345,7 @@ Work proceeds in this order:
 #. Implement and test reward and accounting logic.
 #. Implement and test the synthetic-data simulator.
 #. Connect and validate Qlib data.
-#. Run deterministic baselines.
+#. Establish the configured market benchmark.
 #. Integrate the QlibRL environment.
 #. Train a small DQN smoke model.
 #. Run the formal out-of-sample backtest.
@@ -359,4 +353,5 @@ Work proceeds in this order:
 
 Each phase is a gate. Later work must not be used to hide unresolved failures
 in an earlier phase. In particular, DQN training begins only after the data,
-action construction, portfolio accounting, and baselines are trustworthy.
+action construction, portfolio accounting, and market comparison are
+trustworthy.

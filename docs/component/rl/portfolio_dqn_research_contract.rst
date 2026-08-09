@@ -197,18 +197,17 @@ To reproduce the upstream experiment, the initial integration uses:
     sell cost:    0
     minimum cost: 0
 
-Zero costs are a reproduction setting, not an assumption that trading is
-free. Formal evaluation must include a documented nonzero-cost sensitivity
-test. Costs must be calculated from executed turnover and charged exactly
-once.
+Zero costs are the currently requested engineering setting, not an assumption
+that trading is free. Costs must be calculated from executed turnover and
+charged exactly once when nonzero values are configured. Each result uses the
+costs from its selected workflow without generating a second cost scenario.
 
 The runtime reads ``account``, ``open_cost``, ``close_cost``, and ``min_cost``
 from the selected workflow YAML. ``open_cost`` maps to the simulator's buy
 rate, ``close_cost`` maps to its sell rate, and ``min_cost`` is a dollar
 minimum applied separately to every nonzero stock order. The documented
-sensitivity workflow passes through ``open_cost=0.0005`` and
-``close_cost=0.0015`` as decimal cost ratios, with ``min_cost=5`` as the
-absolute minimum per stock order.
+selected workflow currently passes through ``open_cost=0``, ``close_cost=0``,
+and ``min_cost=0``.
 
 Missing Data Accounting
 =======================
@@ -259,8 +258,8 @@ Initial integration must restrict the artifact to the configured backtest end
 date, 2026-03-30. Later dates must not enter the experiment silently.
 
 The artifact provides roughly 160 non-overlapping two-session decisions. This
-is sufficient for integration tests, deterministic baselines, and a technical
-DQN smoke run. It is not sufficient evidence for a robust learned investment
+is sufficient for integration tests, a market comparison, and a technical DQN
+smoke run. It is not sufficient evidence for a robust learned investment
 policy.
 
 Engineering DQN Split
@@ -330,20 +329,14 @@ Dates must not be randomly distributed across these periods.
 Benchmarks and Required Metrics
 ===============================
 
-The market benchmark is ``^NDX``. DQN must also be compared with deterministic
-strategy baselines:
-
-* cash;
-* hold;
-* equal weight;
-* standard score weight;
-* volatility-adjusted score weight;
-* random action selection.
+The sole standalone comparison strategy is the configured market benchmark,
+``^NDX``. The deterministic portfolio commands remain available to DQN but
+are not reported as independent research strategies.
 
 At minimum, report annualized return, volatility, Sharpe ratio, maximum
 drawdown, turnover, transaction costs, average cash exposure, and action
-selection frequency. Results must be reported both with the reproduction cost
-setting and with a documented nonzero-cost sensitivity setting.
+selection frequency. The current engineering workflow uses zero costs as
+requested, and the report presents only that configured result.
 
 Universe Limitation
 ===================
