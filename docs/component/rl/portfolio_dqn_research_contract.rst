@@ -202,6 +202,24 @@ free. Formal evaluation must include a documented nonzero-cost sensitivity
 test. Costs must be calculated from executed turnover and charged exactly
 once.
 
+Missing Data Accounting
+=======================
+
+The engineering simulator uses these explicit rules:
+
+* a missing score makes that stock ineligible for a new score-based allocation;
+* a missing or non-positive execution close or volume makes the stock
+  non-tradable at that execution boundary;
+* a missing reward-end price must not be used in advance to block an otherwise
+  feasible purchase, because that would reveal future availability;
+* when a held stock has no valid reward-end return, its execution valuation is
+  carried forward by applying a zero return for that transition;
+* every transition reports the total held weight affected by missing returns.
+
+Engineering and smoke-test reports must disclose missing-return weight. The
+zero-return convention is a practical valuation rule for the first runnable
+pipeline, not evidence that missing market data has no economic effect.
+
 Supervised Data Periods
 =======================
 
