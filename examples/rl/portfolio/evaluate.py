@@ -13,13 +13,13 @@ from pathlib import Path
 import pandas as pd
 
 from qlib.rl.portfolio import (
-    ENGINEERING_SPLITS,
     PortfolioDQNConfig,
     build_portfolio_data_split,
     evaluate_dqn,
     load_dqn_checkpoint,
     load_portfolio_workflow_config,
     load_prediction_frame,
+    portfolio_artifact_root,
     regime_diagnostics,
     result_diagnostics,
 )
@@ -27,46 +27,71 @@ from qlib.rl.portfolio.benchmark import run_market_benchmark
 from qlib.rl.portfolio.data import load_qlib_calendar, load_qlib_market_frame
 
 
-DEFAULT_TRAINING_DIR = Path("/home/shiyu/qlib_experiment/portfolio_dqn_training")
-DEFAULT_OUTPUT = Path("/home/shiyu/qlib_experiment/portfolio_dqn_evaluation")
-MARKET_START = "2024-11-01"
-MARKET_END = "2026-03-30"
-
-
+DEFAULT_WORKFLOW_CONFIG = Path(
+    "/home/shiyu/qlib_experiment/alpha158_szrankguard_rolling_horizon2_step10/configs/"
+    "workflow_config_szrankguard_topk20drop2_rolling_h2_step10.yaml"
+)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--training-dir", type=Path, default=DEFAULT_TRAINING_DIR)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--workflow-config", type=Path, default=DEFAULT_WORKFLOW_CONFIG)
+    parser.add_argument("--training-dir", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    training_dir = args.training_dir.expanduser()
+    artifact_root = portfolio_artifact_root(args.workflow_config)
+    training_dir = (
+        args.training_dir.expanduser()
+        if args.training_dir is not None
+        else artifact_root / "training"
+    )
     with (training_dir / "training_config.json").open(encoding="utf-8") as file:
         training_record = json.load(file)
     dqn_values = dict(training_record["dqn"])
     dqn_values["hidden_dims"] = tuple(dqn_values["hidden_dims"])
     dqn_config = PortfolioDQNConfig(**dqn_values)
+    if (
+        Path(training_record["workflow_config"]).expanduser().resolve()
+        != args.workflow_config.expanduser().resolve()
+    ):
+        raise ValueError("Training record workflow does not match --workflow-config.")
     workflow = load_portfolio_workflow_config(training_record["workflow_config"])
+    active_segments = {
+        name: {"start": str(segment.start.date()), "end": str(segment.end.date())}
+        for name, segment in workflow.rl_segments.items()
+    }
+    if training_record.get("rl_segments") != active_segments:
+        raise ValueError("Configured RL segments do not match the saved training record.")
+    if training_record.get("action") != {"max_holdings": workflow.action.max_holdings}:
+        raise ValueError("Configured portfolio action settings do not match the saved training record.")
 
     policy = load_dqn_checkpoint(training_dir / "best_policy.pt", dqn_config)
     predictions = load_prediction_frame(
         training_record["predictions"],
-        ENGINEERING_SPLITS["valid"].start,
-        ENGINEERING_SPLITS["test"].end,
+        workflow.rl_segments["valid"].start,
+        workflow.rl_segments["test"].end,
     )
-    instruments = tuple(sorted(predictions.index.get_level_values("instrument").unique()))
-    calendar = load_qlib_calendar(workflow.provider_uri, workflow.region, MARKET_START, MARKET_END)
+    instruments = tuple(
+        sorted(predictions.index.get_level_values("instrument").unique())
+    )
+    market_start = workflow.rl_segments["train"].start - pd.Timedelta(days=90)
+    market_end = workflow.rl_segments["test"].end
+    calendar = load_qlib_calendar(
+        workflow.provider_uri, workflow.region, market_start, market_end
+    )
     market = load_qlib_market_frame(
         workflow.provider_uri,
         workflow.region,
         [*instruments, workflow.benchmark],
-        MARKET_START,
-        MARKET_END,
+        market_start,
+        market_end,
     )
     benchmark_close = market.xs(workflow.benchmark, level="instrument")["close"]
-    asset_market = market.loc[market.index.get_level_values("instrument").isin(instruments)]
+    asset_market = market.loc[
+        market.index.get_level_values("instrument").isin(instruments)
+    ]
 
     metric_records = []
     diagnostic_records = []
@@ -78,23 +103,32 @@ def main() -> None:
             predictions=predictions,
             market=asset_market,
             calendar=calendar,
-            date_range=ENGINEERING_SPLITS[split_name],
+            date_range=workflow.rl_segments[split_name],
             instruments=instruments,
         )
-        results = {"market": run_market_benchmark("market", split_data, benchmark_close)}
+        results = {
+            "market": run_market_benchmark("market", split_data, benchmark_close)
+        }
         results["dqn"] = evaluate_dqn(
             policy,
             split_data,
             simulator_config=workflow.simulator,
+            action_config=workflow.action,
             name="dqn",
         )
         regimes = regime_diagnostics(results, results["market"])
         regimes.insert(0, "split", split_name)
         regime_frames.append(regimes)
         for strategy, result in results.items():
-            metric_records.append({"split": split_name, "strategy": strategy, **result.metrics})
+            metric_records.append(
+                {"split": split_name, "strategy": strategy, **result.metrics}
+            )
             diagnostic_records.append(
-                {"split": split_name, "strategy": strategy, **result_diagnostics(result)}
+                {
+                    "split": split_name,
+                    "strategy": strategy,
+                    **result_diagnostics(result),
+                }
             )
             for action, count in result.action_counts.items():
                 action_records.append(
@@ -117,7 +151,11 @@ def main() -> None:
     regimes = pd.concat(regime_frames, ignore_index=True)
     transitions = pd.concat(transition_frames, ignore_index=True)
 
-    output_dir = args.output_dir.expanduser()
+    output_dir = (
+        args.output_dir.expanduser()
+        if args.output_dir is not None
+        else artifact_root / "evaluation"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics.to_csv(output_dir / "comparison_metrics.csv", index=False)
     diagnostics.to_csv(output_dir / "strategy_diagnostics.csv", index=False)
@@ -125,11 +163,15 @@ def main() -> None:
     regimes.to_csv(output_dir / "market_regime_metrics.csv", index=False)
     transitions.to_csv(output_dir / "evaluation_transitions.csv", index=False)
     report = build_report(metrics, diagnostics, actions, regimes, training_record)
-    (output_dir / "engineering_evaluation_report.md").write_text(report, encoding="utf-8")
+    (output_dir / "engineering_evaluation_report.md").write_text(
+        report, encoding="utf-8"
+    )
     print(f"Report: {output_dir / 'engineering_evaluation_report.md'}")
     print(
-        metrics.loc[metrics["split"] == "test", ["strategy", "total_return", "sharpe_ratio", "max_drawdown"]]
-        .to_string(index=False)
+        metrics.loc[
+            metrics["split"] == "test",
+            ["strategy", "total_return", "sharpe_ratio", "max_drawdown"],
+        ].to_string(index=False)
     )
 
 
@@ -144,11 +186,20 @@ def build_report(
 
     test_metrics = metrics.loc[
         metrics["split"] == "test",
-        ["strategy", "total_return", "annualized_volatility", "sharpe_ratio", "max_drawdown", "cumulative_turnover"],
+        [
+            "strategy",
+            "total_return",
+            "annualized_volatility",
+            "sharpe_ratio",
+            "max_drawdown",
+            "cumulative_turnover",
+        ],
     ]
     dqn_diagnostics = diagnostics.loc[diagnostics["strategy"] == "dqn"]
     dqn_actions = actions.loc[actions["strategy"] == "dqn"]
-    dqn_regimes = regimes.loc[(regimes["strategy"] == "dqn") & (regimes["split"] == "test")]
+    dqn_regimes = regimes.loc[
+        (regimes["strategy"] == "dqn") & (regimes["split"] == "test")
+    ]
     test_dqn = dqn_diagnostics.loc[dqn_diagnostics["split"] == "test"].iloc[0]
     collapsed = test_dqn["dominant_action_frequency"] >= 0.9
     return "\n".join(

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Sequence, Tuple, Union
+from typing import Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -27,13 +27,6 @@ class DateRange:
             raise ValueError("DateRange start must not be after end.")
         object.__setattr__(self, "start", normalized_start)
         object.__setattr__(self, "end", normalized_end)
-
-
-ENGINEERING_SPLITS: Dict[str, DateRange] = {
-    "train": DateRange("2025-01-02", "2025-09-30"),
-    "valid": DateRange("2025-10-01", "2025-12-31"),
-    "test": DateRange("2026-01-02", "2026-03-30"),
-}
 
 
 @dataclass(frozen=True)

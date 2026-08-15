@@ -17,6 +17,7 @@ import torch
 from tianshou.data import Batch, ReplayBuffer
 from tianshou.data.collector import Collector
 
+from .action import PortfolioActionConfig
 from .benchmark import BenchmarkResult, calculate_metrics
 from .data import PortfolioDataSplit
 from .integration import make_portfolio_env
@@ -39,6 +40,7 @@ def train_dqn(
     valid_data: PortfolioDataSplit,
     dqn_config: PortfolioDQNConfig = PortfolioDQNConfig(),
     simulator_config: PortfolioSimulatorConfig = PortfolioSimulatorConfig(),
+    action_config: PortfolioActionConfig = PortfolioActionConfig(),
 ) -> PortfolioDQNTrainingResult:
     """Train on one chronological split and select by validation total return."""
 
@@ -47,7 +49,7 @@ def train_dqn(
     replay_buffer = ReplayBuffer(dqn_config.replay_buffer_size)
     collector = Collector(
         policy,
-        make_portfolio_env(train_data, simulator_config=simulator_config),
+        make_portfolio_env(train_data, simulator_config=simulator_config, action_config=action_config),
         replay_buffer,
         exploration_noise=True,
     )
@@ -67,7 +69,13 @@ def train_dqn(
             losses.append(float(update["loss"]))
             gradient_norms.append(float(update["gradient_norm"]))
 
-        validation = evaluate_dqn(policy, valid_data, simulator_config=simulator_config, name="validation")
+        validation = evaluate_dqn(
+            policy,
+            valid_data,
+            simulator_config=simulator_config,
+            action_config=action_config,
+            name="validation",
+        )
         validation_return = validation.metrics["total_return"]
         if validation_return > best_return:
             best_return = validation_return
@@ -87,7 +95,13 @@ def train_dqn(
         )
 
     policy.load_state_dict(best_state)
-    selected_validation = evaluate_dqn(policy, valid_data, simulator_config=simulator_config, name="validation")
+    selected_validation = evaluate_dqn(
+        policy,
+        valid_data,
+        simulator_config=simulator_config,
+        action_config=action_config,
+        name="validation",
+    )
     return PortfolioDQNTrainingResult(
         policy=policy,
         history=pd.DataFrame.from_records(records),
@@ -100,6 +114,7 @@ def evaluate_dqn(
     policy: PortfolioDQNPolicy,
     data: PortfolioDataSplit,
     simulator_config: PortfolioSimulatorConfig = PortfolioSimulatorConfig(),
+    action_config: PortfolioActionConfig = PortfolioActionConfig(),
     name: str = "dqn",
 ) -> BenchmarkResult:
     """Run one greedy DQN episode without exploration."""
@@ -107,7 +122,7 @@ def evaluate_dqn(
     previous_epsilon = policy.eps
     policy.set_eps(0.0)
     policy.eval()
-    env = make_portfolio_env(data, simulator_config=simulator_config)
+    env = make_portfolio_env(data, simulator_config=simulator_config, action_config=action_config)
     observation = env.reset()
     records = []
     action_counts: Dict[str, int] = {}

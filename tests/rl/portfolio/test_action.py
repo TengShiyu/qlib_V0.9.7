@@ -60,6 +60,20 @@ class PortfolioActionTest(unittest.TestCase):
         self.assertAlmostEqual(float(aggressive.asset_weights.sum()), 0.9)
         self.assertAlmostEqual(aggressive.cash_weight, 0.1)
 
+    def test_max_holdings_keeps_highest_positive_scores(self) -> None:
+        target = build_target_weights(
+            PortfolioAction.EQUAL_WEIGHT,
+            current_asset_weights=np.zeros(5),
+            current_cash_weight=1.0,
+            scores=np.array([1.0, 5.0, 3.0, 4.0, 2.0]),
+            tradable=np.ones(5, dtype=np.bool_),
+            volatility=np.ones(5),
+            config=PortfolioActionConfig(max_holdings=2),
+        )
+
+        np.testing.assert_allclose(target.asset_weights, [0.0, 0.5, 0.0, 0.5, 0.0])
+        self.assertEqual(np.count_nonzero(target.asset_weights), 2)
+
     def test_non_tradable_asset_is_excluded_before_score_normalization(self) -> None:
         target = build_target_weights(PortfolioAction.AGGRESSIVE_SCORE, **self.inputs)
 

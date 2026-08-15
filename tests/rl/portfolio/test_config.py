@@ -5,10 +5,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from qlib.rl.portfolio.config import load_portfolio_workflow_config
+from qlib.rl.portfolio.config import (
+    load_portfolio_workflow_config,
+    portfolio_artifact_root,
+)
 
 
 class PortfolioConfigTest(unittest.TestCase):
+    def test_artifact_root_is_derived_from_experiment_config_directory(self) -> None:
+        config = Path("/experiments/new_signal_experiment/configs/workflow.yaml")
+        self.assertEqual(
+            portfolio_artifact_root(config),
+            Path("/experiments/new_signal_experiment/portfolio_dqn_rl"),
+        )
+
+    def test_artifact_root_rejects_config_outside_configs_directory(self) -> None:
+        with self.assertRaisesRegex(ValueError, "configs directory"):
+            portfolio_artifact_root("/experiments/new_signal_experiment/workflow.yaml")
+
     def test_loads_backtest_costs_from_workflow_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "workflow.yaml"
@@ -18,9 +32,17 @@ qlib_init:
     provider_uri: /data/qlib
     region: us
 port_analysis_config:
+    strategy:
+        class: PortfolioDQNStrategy
+        kwargs:
+            max_holdings: 12
     backtest:
         account: 250000
         benchmark: ^NDX
+        rl_segments:
+            train: [2025-01-02, 2025-09-30]
+            valid: [2025-10-01, 2025-12-31]
+            test: [2026-01-02, 2026-03-30]
         exchange_kwargs:
             open_cost: 0.0005
             close_cost: 0.0015
@@ -37,6 +59,9 @@ port_analysis_config:
         self.assertEqual(config.simulator.buy_cost, 0.0005)
         self.assertEqual(config.simulator.sell_cost, 0.0015)
         self.assertEqual(config.simulator.min_cost, 5.0)
+        self.assertEqual(config.action.max_holdings, 12)
+        self.assertEqual(str(config.rl_segments["train"].start.date()), "2025-01-02")
+        self.assertEqual(str(config.rl_segments["test"].end.date()), "2026-03-30")
 
 
 if __name__ == "__main__":

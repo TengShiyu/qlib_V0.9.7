@@ -5,6 +5,39 @@ Qlib's existing single-asset order-execution RL implementation. The first
 version is deliberately isolated from existing Qlib behavior: it adds a new
 package, examples, and tests without changing the order-execution modules.
 
+## Experiment artifact layout
+
+RL output paths are derived from the selected workflow configuration. Given:
+
+```text
+<experiment>/configs/<workflow>.yaml
+```
+
+the benchmark, training, and evaluation commands automatically use:
+
+```text
+<experiment>/portfolio_dqn_rl/
+├── baselines/
+├── training/
+└── evaluation/
+```
+
+For a future signal experiment, pass its workflow and prediction artifact:
+
+```bash
+python examples/rl/portfolio/run_benchmarks.py \
+    --workflow-config <experiment>/configs/<workflow>.yaml
+
+python examples/rl/portfolio/train.py \
+    --workflow-config <experiment>/configs/<workflow>.yaml
+
+python examples/rl/portfolio/evaluate.py \
+    --workflow-config <experiment>/configs/<workflow>.yaml
+```
+
+An explicit `--output-dir` remains available for benchmark and training runs.
+Evaluation also accepts explicit `--training-dir` and `--output-dir` overrides.
+
 ## Research objective
 
 Train a DQN agent to choose a portfolio-rebalancing command every two trading
@@ -154,8 +187,10 @@ conda run -n qlib_rl_env python examples/rl/portfolio/run_benchmarks.py
 
 The command evaluates only the configured `^NDX` market benchmark. Individual
 portfolio commands remain inside the DQN action space but are not standalone
-research strategies. Reports are written by default to
-`/home/shiyu/qlib_experiment/portfolio_dqn_baselines`, outside Git.
+research strategies. Reports are written by default under the source signal
+experiment at
+`alpha158_szrankguard_rolling_horizon2_step10/portfolio_dqn_rl/baselines`,
+outside Git.
 
 The market index is a price-return reference and does not generate simulated
 stock orders or transaction costs. The DQN training and evaluation commands
@@ -182,10 +217,11 @@ exploration, a target network, Huber loss, gradient clipping, and fixed random
 seeds.
 
 By default, the checkpoint, training history, exact configuration, validation
-and test metrics, action frequencies, and transition audit are written to
-`/home/shiyu/qlib_experiment/portfolio_dqn_training`, outside Git. This short
-run is an engineering verification and not evidence of a robust learned
-investment strategy.
+and test metrics, action frequencies, and transition audit are written under
+the source signal experiment at
+`alpha158_szrankguard_rolling_horizon2_step10/portfolio_dqn_rl/training`,
+outside Git. This short run is an engineering verification and not evidence of
+a robust learned investment strategy.
 
 ## Phase 7 engineering evaluation
 
@@ -199,8 +235,26 @@ The evaluation reuses the saved model without fitting it again and reads costs
 only from the workflow stored in the training record. It reports action
 persistence, market-regime behavior, gross and net returns, turnover, cash
 exposure, stock-weight concentration, drawdown, and action collapse. The
-Markdown report and audit CSVs are written
-to `/home/shiyu/qlib_experiment/portfolio_dqn_evaluation`, outside Git.
+Markdown report and audit CSVs are written under the source signal experiment
+at `alpha158_szrankguard_rolling_horizon2_step10/portfolio_dqn_rl/evaluation`,
+outside Git.
+
+When `PortfolioDQNRecord` runs the Qlib backtest, this directory is replaced
+with a live-execution audit from that same run:
+
+- `dqn_actions.csv`: every scheduled DQN decision and its requested turnover;
+- `executed_orders.csv`: orders actually filled by Qlib, including side, amount,
+  price, value, and cost;
+- `daily_holdings.csv`: each daily stock position and `holding_sessions`;
+- `portfolio_report.csv`: Qlib's daily account, return, cost, cash, and benchmark;
+- `action_frequency.csv`: action counts from the live Qlib strategy;
+- `comparison_metrics.csv`: DQN versus market return from the Qlib report;
+- `strategy_diagnostics.csv`: decision, execution, dominant-action, and maximum
+  holding-session diagnostics;
+- `run_manifest.json`: dates and row counts identifying the source run.
+
+These files describe the Qlib execution path. They are not copied from the
+separate offline simulator.
 
 ## Milestone 1 acceptance criteria
 

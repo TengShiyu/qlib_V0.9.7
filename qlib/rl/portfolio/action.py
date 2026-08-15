@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from numbers import Integral
 from typing import Optional, Tuple, Union
 
 import numpy as np
@@ -41,6 +42,7 @@ class PortfolioActionConfig:
     conservative_equity: float = 0.50
     standard_equity: float = 0.80
     aggressive_equity: float = 0.95
+    max_holdings: Optional[int] = None
     tolerance: float = 1e-8
 
     def __post_init__(self) -> None:
@@ -49,6 +51,12 @@ class PortfolioActionConfig:
             raise ValueError("Equity budgets must be finite values between zero and one.")
         if not self.conservative_equity <= self.standard_equity <= self.aggressive_equity:
             raise ValueError("Equity budgets must be ordered conservative <= standard <= aggressive.")
+        if self.max_holdings is not None and (
+            isinstance(self.max_holdings, bool)
+            or not isinstance(self.max_holdings, Integral)
+            or self.max_holdings <= 0
+        ):
+            raise ValueError("max_holdings must be a positive integer when provided.")
         if not np.isfinite(self.tolerance) or self.tolerance <= 0.0:
             raise ValueError("tolerance must be a positive finite value.")
 
@@ -123,6 +131,13 @@ def build_target_weights(
         return _finalize(target, cfg.tolerance)
 
     positive_and_tradable = tradable_mask & (score_values > 0.0)
+    positive_and_tradable = _limit_eligible_holdings(
+        positive_and_tradable,
+        score_values,
+        locked,
+        cfg.max_holdings,
+        cfg.tolerance,
+    )
 
     if resolved_action == PortfolioAction.EQUAL_WEIGHT:
         target = _weighted_target(locked, positive_and_tradable, np.ones_like(score_values), 1.0)
@@ -207,6 +222,28 @@ def _weighted_target(
     if tradable_equity_budget > 0.0 and value_sum > 0.0:
         target += eligible_values / value_sum * tradable_equity_budget
     return target
+
+
+def _limit_eligible_holdings(
+    eligible: np.ndarray,
+    scores: np.ndarray,
+    locked: np.ndarray,
+    max_holdings: Optional[int],
+    tolerance: float,
+) -> np.ndarray:
+    """Keep the highest-scored eligible names within the available slots."""
+
+    if max_holdings is None:
+        return eligible
+    locked_count = int(np.count_nonzero(locked > tolerance))
+    available_slots = max(0, max_holdings - locked_count)
+    eligible_indexes = np.flatnonzero(eligible)
+    if len(eligible_indexes) <= available_slots:
+        return eligible
+    ranked = eligible_indexes[np.argsort(-scores[eligible_indexes], kind="stable")]
+    limited = np.zeros_like(eligible)
+    limited[ranked[:available_slots]] = True
+    return limited
 
 
 def _finalize(asset_weights: np.ndarray, tolerance: float) -> PortfolioTarget:
