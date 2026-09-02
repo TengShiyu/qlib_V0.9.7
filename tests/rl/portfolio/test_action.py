@@ -37,6 +37,14 @@ class PortfolioActionTest(unittest.TestCase):
         np.testing.assert_array_equal(target.asset_weights, self.inputs["current_asset_weights"])
         self.assertAlmostEqual(target.cash_weight, self.inputs["current_cash_weight"])
 
+    def test_existing_action_ids_remain_stable_and_new_ids_are_appended(self) -> None:
+        self.assertEqual(PortfolioAction.PARTIAL_REBALANCE.value, 7)
+        self.assertEqual(PortfolioAction.INCREASE_EXPOSURE.value, 8)
+        self.assertEqual(PortfolioAction.TOP_SCORE_CONCENTRATED.value, 9)
+        self.assertEqual(PortfolioAction.ROTATE_WORST_TO_BEST.value, 10)
+        self.assertEqual(PortfolioAction.DEFENSIVE_VOLATILITY.value, 11)
+        self.assertEqual(len(PortfolioAction), 12)
+
     def test_cash_keeps_only_locked_non_tradable_positions(self) -> None:
         target = build_target_weights(PortfolioAction.CASH, **self.inputs)
 
@@ -101,6 +109,50 @@ class PortfolioActionTest(unittest.TestCase):
 
         np.testing.assert_allclose(target.asset_weights, [0.38, 0.1, 0.05, 0.07])
         self.assertAlmostEqual(target.cash_weight, 0.4)
+
+    def test_increase_exposure_deploys_configured_share_of_cash(self) -> None:
+        target = build_target_weights(PortfolioAction.INCREASE_EXPOSURE, **self.inputs)
+
+        np.testing.assert_allclose(target.asset_weights, [0.35, 0.10, 0.10, 0.0])
+        self.assertAlmostEqual(target.cash_weight, 0.45)
+
+    def test_increase_exposure_never_adds_to_negative_score_holding(self) -> None:
+        target = build_target_weights(PortfolioAction.INCREASE_EXPOSURE, **self.inputs)
+
+        self.assertAlmostEqual(target.asset_weights[2], self.inputs["current_asset_weights"][2])
+        self.assertGreater(target.asset_weights[0], self.inputs["current_asset_weights"][0])
+
+    def test_concentrated_action_uses_only_highest_scored_names(self) -> None:
+        target = build_target_weights(
+            PortfolioAction.TOP_SCORE_CONCENTRATED,
+            current_asset_weights=np.zeros(6),
+            current_cash_weight=1.0,
+            scores=np.array([1.0, 6.0, 4.0, 5.0, 2.0, 3.0]),
+            tradable=np.ones(6, dtype=np.bool_),
+            volatility=np.ones(6),
+            config=PortfolioActionConfig(concentrated_holdings=3),
+        )
+
+        np.testing.assert_allclose(target.asset_weights, [0.0, 0.38, 0.2533333333, 0.3166666667, 0.0, 0.0])
+        self.assertAlmostEqual(target.cash_weight, 0.05)
+
+    def test_rotate_replaces_weakest_tradable_holdings(self) -> None:
+        target = build_target_weights(PortfolioAction.ROTATE_WORST_TO_BEST, **self.inputs)
+
+        np.testing.assert_allclose(target.asset_weights, [0.20, 0.10, 0.0, 0.10])
+        self.assertAlmostEqual(target.cash_weight, 0.60)
+
+    def test_rotate_sells_only_as_many_holdings_as_it_can_replace(self) -> None:
+        target = build_target_weights(PortfolioAction.ROTATE_WORST_TO_BEST, **self.inputs)
+
+        self.assertAlmostEqual(float(target.asset_weights.sum()), 0.40)
+        self.assertEqual(np.count_nonzero(target.asset_weights), 3)
+
+    def test_defensive_volatility_uses_lower_equity_budget(self) -> None:
+        target = build_target_weights(PortfolioAction.DEFENSIVE_VOLATILITY, **self.inputs)
+
+        np.testing.assert_allclose(target.asset_weights, [0.3555555556, 0.10, 0.0, 0.0444444444])
+        self.assertAlmostEqual(target.cash_weight, 0.50)
 
     def test_no_eligible_assets_places_available_budget_in_cash(self) -> None:
         self.inputs["scores"] = np.array([-1.0, 2.0, np.nan, 0.0])

@@ -43,6 +43,10 @@ def make_data(
 
 
 class PortfolioSimulatorTest(unittest.TestCase):
+    def test_rejects_invalid_turnover_penalty(self) -> None:
+        with self.assertRaisesRegex(ValueError, "turnover_penalty"):
+            PortfolioSimulatorConfig(turnover_penalty=-0.001)
+
     def test_reset_starts_all_cash(self) -> None:
         simulator = PortfolioSimulator(make_data(np.array([[0.1, 0.2]])))
         state = simulator.reset()
@@ -80,6 +84,54 @@ class PortfolioSimulatorTest(unittest.TestCase):
         self.assertAlmostEqual(transition.turnover.buy, 1.0)
         self.assertAlmostEqual(transition.reward.transaction_cost, 0.001)
         self.assertAlmostEqual(transition.ending_value, 99_900.0)
+        self.assertAlmostEqual(transition.ending_cash_weight, 0.0)
+        self.assertAlmostEqual(float(transition.ending_asset_weights.sum()), 1.0)
+
+    def test_nonzero_cost_weights_remain_valid_for_the_next_decision(self) -> None:
+        simulator = PortfolioSimulator(
+            make_data(np.zeros((2, 2))),
+            config=PortfolioSimulatorConfig(buy_cost=0.001, sell_cost=0.002),
+        )
+
+        first = simulator.step(PortfolioAction.EQUAL_WEIGHT)
+        second = simulator.step(PortfolioAction.CASH)
+
+        self.assertAlmostEqual(first.ending_value, 99_900.0)
+        self.assertAlmostEqual(float(first.ending_asset_weights.sum()), 1.0)
+        self.assertAlmostEqual(first.ending_cash_weight, 0.0)
+        self.assertAlmostEqual(second.ending_value, 99_700.2)
+        self.assertAlmostEqual(float(second.ending_asset_weights.sum()), 0.0)
+        self.assertAlmostEqual(second.ending_cash_weight, 1.0)
+
+    def test_turnover_penalty_changes_learning_reward_not_account_value(self) -> None:
+        simulator = PortfolioSimulator(
+            make_data(np.array([[0.0, 0.0]])),
+            config=PortfolioSimulatorConfig(turnover_penalty=0.002),
+        )
+        transition = simulator.step(PortfolioAction.EQUAL_WEIGHT)
+
+        self.assertAlmostEqual(transition.turnover.one_way, 1.0)
+        self.assertAlmostEqual(transition.reward.turnover_penalty, 0.002)
+        self.assertAlmostEqual(transition.reward.net_return, 0.0)
+        self.assertAlmostEqual(transition.reward.learning_reward, -0.002)
+        self.assertAlmostEqual(transition.ending_value, 100_000.0)
+
+    def test_account_uses_real_net_return_not_learning_penalty(self) -> None:
+        simulator = PortfolioSimulator(
+            make_data(np.array([[0.10]])),
+            config=PortfolioSimulatorConfig(
+                buy_cost=0.001,
+                turnover_penalty=0.002,
+            ),
+        )
+        transition = simulator.step(PortfolioAction.EQUAL_WEIGHT)
+
+        self.assertAlmostEqual(transition.reward.gross_return, 0.10)
+        self.assertAlmostEqual(transition.reward.transaction_cost, 0.001)
+        self.assertAlmostEqual(transition.reward.net_return, 0.099)
+        self.assertAlmostEqual(transition.reward.turnover_penalty, 0.002)
+        self.assertAlmostEqual(transition.reward.learning_reward, 0.097)
+        self.assertAlmostEqual(transition.ending_value, 109_900.0)
 
     def test_sell_cost_is_charged_once_when_liquidating(self) -> None:
         simulator = PortfolioSimulator(

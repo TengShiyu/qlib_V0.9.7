@@ -34,11 +34,13 @@ class PortfolioTurnover:
 
 @dataclass(frozen=True)
 class PortfolioReward:
-    """Gross return, cost, and net reward for one holding period."""
+    """Real portfolio return and learning-only penalty for one holding period."""
 
     gross_return: float
     transaction_cost: float
+    turnover_penalty: float
     net_return: float
+    learning_reward: float
     missing_return_weight: float
     effective_asset_returns: np.ndarray
 
@@ -74,6 +76,7 @@ def calculate_portfolio_reward(
     buy_cost: float = 0.0,
     sell_cost: float = 0.0,
     min_cost: float = 0.0,
+    turnover_penalty_rate: float = 0.0,
     portfolio_value: float = 1.0,
     missing_return_value: float = 0.0,
     tolerance: float = 1e-8,
@@ -99,6 +102,8 @@ def calculate_portfolio_reward(
         raise ValueError("Transaction-cost rates must be finite and non-negative.")
     if not np.isfinite(min_cost) or min_cost < 0.0:
         raise ValueError("min_cost must be a finite non-negative dollar amount.")
+    if not np.isfinite(turnover_penalty_rate) or turnover_penalty_rate < 0.0:
+        raise ValueError("turnover_penalty_rate must be finite and non-negative.")
     if not np.isfinite(portfolio_value) or portfolio_value <= 0.0:
         raise ValueError("portfolio_value must be positive and finite.")
     if not np.isfinite(missing_return_value) or missing_return_value < -1.0:
@@ -115,11 +120,15 @@ def calculate_portfolio_reward(
     sell_fees = _order_fees(turnover.sell_orders, portfolio_value, sell_cost, min_cost)
     transaction_cost = float((buy_fees.sum() + sell_fees.sum()) / portfolio_value)
     net_return = gross_return - transaction_cost
+    turnover_penalty = turnover_penalty_rate * turnover.one_way
+    learning_reward = net_return - turnover_penalty
 
     return PortfolioReward(
         gross_return=gross_return,
         transaction_cost=transaction_cost,
+        turnover_penalty=turnover_penalty,
         net_return=net_return,
+        learning_reward=learning_reward,
         missing_return_weight=missing_return_weight,
         effective_asset_returns=effective_returns,
     )

@@ -9,6 +9,7 @@ import pandas as pd
 from qlib.rl.interpreter import GymSpaceValidationError
 from qlib.rl.portfolio import OBSERVATION_DIM, PortfolioAction, make_portfolio_env
 from qlib.rl.portfolio.data import PortfolioDataSplit
+from qlib.rl.portfolio.simulator import PortfolioSimulatorConfig
 
 
 def make_data(asset_returns: np.ndarray) -> PortfolioDataSplit:
@@ -39,13 +40,29 @@ def make_data(asset_returns: np.ndarray) -> PortfolioDataSplit:
 
 
 class PortfolioIntegrationTest(unittest.TestCase):
+    def test_environment_returns_penalized_reward_without_reducing_account(self) -> None:
+        env = make_portfolio_env(
+            make_data(np.zeros((1, 2))),
+            simulator_config=PortfolioSimulatorConfig(turnover_penalty=0.002),
+        )
+        env.reset()
+
+        _, reward, done, _ = env.step(PortfolioAction.EQUAL_WEIGHT.value)
+        transition = env.simulator.get_state().last_transition
+
+        self.assertTrue(done)
+        self.assertAlmostEqual(reward, -0.002)
+        self.assertAlmostEqual(transition.reward.net_return, 0.0)
+        self.assertAlmostEqual(transition.reward.turnover_penalty, 0.002)
+        self.assertAlmostEqual(transition.ending_value, 100_000.0)
+
     def test_environment_spaces_and_random_episode(self) -> None:
         data = make_data(np.array([[0.01, 0.02], [-0.01, 0.03], [0.02, 0.01]]))
         env = make_portfolio_env(data)
 
         observation = env.reset()
         self.assertEqual(observation.shape, (OBSERVATION_DIM,))
-        self.assertEqual(OBSERVATION_DIM, 49)
+        self.assertEqual(OBSERVATION_DIM, 65)
         self.assertTrue(env.observation_space.contains(observation))
         self.assertEqual(env.action_space.n, len(PortfolioAction))
 

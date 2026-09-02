@@ -15,7 +15,7 @@ from .simulator import PortfolioSimulator, PortfolioSimulatorConfig, PortfolioSt
 
 
 class PortfolioNetReturnReward(Reward[PortfolioState]):
-    """Expose the simulator's latest net two-session return to QlibRL."""
+    """Expose real net return minus the learning-only turnover penalty."""
 
     def reward(self, simulator_state: PortfolioState) -> float:
         transition = simulator_state.last_transition
@@ -23,8 +23,11 @@ class PortfolioNetReturnReward(Reward[PortfolioState]):
             raise RuntimeError("Portfolio reward requested before the first transition.")
         self.log("reward/gross_return", transition.reward.gross_return)
         self.log("reward/transaction_cost", transition.reward.transaction_cost)
+        self.log("reward/turnover_penalty", transition.reward.turnover_penalty)
+        self.log("reward/penalized_learning_reward", transition.reward.learning_reward)
+        self.log("reward/portfolio_net_return", transition.reward.net_return)
         self.log("reward/missing_return_weight", transition.reward.missing_return_weight)
-        return transition.reward.net_return
+        return transition.reward.learning_reward
 
 
 def make_portfolio_env(

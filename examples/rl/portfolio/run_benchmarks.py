@@ -27,8 +27,8 @@ DEFAULT_PREDICTIONS = Path(
     "58da01314bfa4295a96b952d5dbb7db4/artifacts/pred.pkl"
 )
 DEFAULT_WORKFLOW_CONFIG = Path(
-    "/home/shiyu/qlib_experiment/alpha158_szrankguard_rolling_horizon2_step10/configs/"
-    "workflow_config_szrankguard_topk20drop2_rolling_h2_step10.yaml"
+    "/home/shiyu/qlib_experiment/alpha158_szrankguard_rolling_DQN/configs/"
+    "workflow_config_szrankguard_topk20drop2_rolling_DQN.yaml"
 )
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -43,14 +43,14 @@ def main() -> None:
     workflow = load_portfolio_workflow_config(args.workflow_config)
     predictions = load_prediction_frame(
         args.predictions,
-        workflow.rl_segments["valid"].start,
-        workflow.rl_segments["test"].end,
+        workflow.rolling_segments["valid"].start,
+        workflow.rolling_segments["test"].end,
     )
     instruments = tuple(
         sorted(predictions.index.get_level_values("instrument").unique())
     )
-    market_start = workflow.rl_segments["train"].start - pd.Timedelta(days=90)
-    market_end = workflow.rl_segments["test"].end
+    market_start = workflow.rolling_segments["train"].start - pd.Timedelta(days=90)
+    market_end = workflow.rolling_segments["test"].end
     calendar = load_qlib_calendar(
         workflow.provider_uri, workflow.region, market_start, market_end
     )
@@ -70,7 +70,7 @@ def main() -> None:
     action_records = []
     transition_frames = []
     for split_name in ("valid", "test"):
-        split_range = workflow.rl_segments[split_name]
+        split_range = workflow.rolling_segments[split_name]
         data = build_portfolio_data_split(
             predictions=predictions,
             market=asset_market,

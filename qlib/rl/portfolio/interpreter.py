@@ -23,10 +23,10 @@ OBSERVATION_DIM = GLOBAL_FEATURE_COUNT + ACTION_FEATURE_COUNT * len(PortfolioAct
 
 
 class PortfolioStateInterpreter(StateInterpreter[PortfolioState, np.ndarray]):
-    """Convert a variable-universe portfolio state into 49 fixed features.
+    """Convert a variable-universe portfolio state into 65 fixed features.
 
     The global block describes current exposure, recent realized returns, and
-    cross-sectional score/volatility availability. Each action then contributes
+    cross-sectional score/volatility availability. Each of the twelve actions then contributes
     four ex-ante properties: equity exposure, two-way turnover, score exposure,
     and diagonal volatility. No realized forward return enters the observation.
     """
@@ -68,7 +68,7 @@ def build_portfolio_observation(
     net_return_history: Optional[np.ndarray] = None,
     action_config: PortfolioActionConfig = PortfolioActionConfig(),
 ) -> np.ndarray:
-    """Build the shared 49-feature observation for training and Qlib backtests."""
+    """Build the shared 65-feature observation for training and Qlib backtests."""
 
     state_asset_weights = np.asarray(asset_weights, dtype=np.float64)
     if state_asset_weights.ndim != 1 or state_asset_weights.size == 0:

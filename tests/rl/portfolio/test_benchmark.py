@@ -51,6 +51,9 @@ class PortfolioBenchmarkTest(unittest.TestCase):
         )
 
         np.testing.assert_allclose(result.transitions["net_return"], expected)
+        np.testing.assert_allclose(result.transitions["portfolio_net_return"], expected)
+        np.testing.assert_allclose(result.transitions["learning_reward"], expected)
+        np.testing.assert_allclose(result.transitions["turnover_penalty"], 0.0)
         self.assertEqual(result.metrics["average_cash_exposure"], 0.0)
 
     def test_metrics_include_initial_value_in_drawdown(self) -> None:

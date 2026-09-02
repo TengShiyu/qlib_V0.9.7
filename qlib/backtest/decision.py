@@ -315,7 +315,12 @@ class BaseTradeDecision(Generic[DecisionType]):
         2. Same as `case 1.3`
     """
 
-    def __init__(self, strategy: BaseStrategy, trade_range: Union[Tuple[int, int], TradeRange, None] = None) -> None:
+    def __init__(
+        self,
+        strategy: BaseStrategy,
+        trade_range: Union[Tuple[int, int], TradeRange, None] = None,
+        trade_time: Optional[Tuple[pd.Timestamp, pd.Timestamp]] = None,
+    ) -> None:
         """
         Parameters
         ----------
@@ -333,7 +338,9 @@ class BaseTradeDecision(Generic[DecisionType]):
 
         """
         self.strategy = strategy
-        self.start_time, self.end_time = strategy.trade_calendar.get_step_time()
+        self.start_time, self.end_time = (
+            strategy.trade_calendar.get_step_time() if trade_time is None else trade_time
+        )
         # upper strategy has no knowledge about the sub executor before `_init_sub_trading`
         self.total_step: Optional[int] = None
         if isinstance(trade_range, tuple):
@@ -555,10 +562,11 @@ class TradeDecisionWO(BaseTradeDecision[Order]):
         order_list: List[Order],
         strategy: BaseStrategy,
         trade_range: Union[Tuple[int, int], TradeRange, None] = None,
+        trade_time: Optional[Tuple[pd.Timestamp, pd.Timestamp]] = None,
     ) -> None:
-        super().__init__(strategy, trade_range=trade_range)
+        super().__init__(strategy, trade_range=trade_range, trade_time=trade_time)
         self.order_list = cast(List[Order], order_list)
-        start, end = strategy.trade_calendar.get_step_time()
+        start, end = self.start_time, self.end_time
         for o in order_list:
             assert isinstance(o, Order)
             if o.start_time is None:

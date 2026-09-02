@@ -26,6 +26,7 @@ class PortfolioSimulatorConfig:
     buy_cost: float = 0.0
     sell_cost: float = 0.0
     min_cost: float = 0.0
+    turnover_penalty: float = 0.0
     missing_return_value: float = 0.0
     tolerance: float = 1e-8
 
@@ -38,6 +39,8 @@ class PortfolioSimulatorConfig:
             raise ValueError("sell_cost must be a finite non-negative value.")
         if not np.isfinite(self.min_cost) or self.min_cost < 0.0:
             raise ValueError("min_cost must be a finite non-negative dollar amount.")
+        if not np.isfinite(self.turnover_penalty) or self.turnover_penalty < 0.0:
+            raise ValueError("turnover_penalty must be a finite non-negative value.")
         if not np.isfinite(self.missing_return_value) or self.missing_return_value < -1.0:
             raise ValueError("missing_return_value must be finite and no less than -1.")
         if not np.isfinite(self.tolerance) or self.tolerance <= 0.0:
@@ -158,6 +161,7 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
             buy_cost=self.config.buy_cost,
             sell_cost=self.config.sell_cost,
             min_cost=self.config.min_cost,
+            turnover_penalty_rate=self.config.turnover_penalty,
             portfolio_value=starting_value,
             missing_return_value=self.config.missing_return_value,
             tolerance=self.config.tolerance,
@@ -221,13 +225,23 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
 
     def _drift_weights(self, target: PortfolioTarget, reward: PortfolioReward) -> tuple[np.ndarray, float]:
         asset_values = target.asset_weights * (1.0 + reward.effective_asset_returns)
-        cash_value = target.cash_weight
-        gross_value = float(asset_values.sum() + cash_value)
-        if not np.isfinite(gross_value) or gross_value <= 0.0:
-            raise ValueError("Gross portfolio value became non-positive or non-finite.")
+        cash_value = max(target.cash_weight - reward.transaction_cost, 0.0)
+        fee_shortfall = max(reward.transaction_cost - target.cash_weight, 0.0)
+        if fee_shortfall > 0.0:
+            asset_value = float(asset_values.sum())
+            if asset_value <= fee_shortfall:
+                raise ValueError("Transaction costs exhausted the post-return portfolio value.")
+            asset_values *= (asset_value - fee_shortfall) / asset_value
 
-        ending_assets = asset_values / gross_value
-        ending_cash = cash_value / gross_value
+        net_value = float(asset_values.sum() + cash_value)
+        expected_net_value = 1.0 + reward.net_return
+        if not np.isfinite(net_value) or net_value <= 0.0:
+            raise ValueError("Net portfolio value became non-positive or non-finite.")
+        if not np.isclose(net_value, expected_net_value, atol=self.config.tolerance, rtol=0.0):
+            raise ValueError("Post-return holdings do not reconcile to the net portfolio return.")
+
+        ending_assets = asset_values / net_value
+        ending_cash = cash_value / net_value
         if not np.isclose(ending_assets.sum() + ending_cash, 1.0, atol=self.config.tolerance, rtol=0.0):
             raise ValueError("Post-return asset and cash weights do not sum to one.")
         return ending_assets, float(ending_cash)

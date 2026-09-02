@@ -53,11 +53,15 @@ from .simulator import (
 )
 from .training import (
     PortfolioDQNTrainingResult,
+    action_config_record,
+    cumulative_learning_return,
     evaluate_dqn,
     load_dqn_checkpoint,
     save_dqn_checkpoint,
+    simulator_config_record,
     train_dqn,
 )
+from .rolling import PortfolioRollingWindow, generate_portfolio_rolling_windows, rolling_windows_frame
 
 __all__ = [
     "PortfolioAction",
@@ -69,7 +73,10 @@ __all__ = [
     "results_frame",
     "run_required_benchmarks",
     "PortfolioWorkflowConfig",
+    "PortfolioRollingWindow",
     "load_portfolio_workflow_config",
+    "generate_portfolio_rolling_windows",
+    "rolling_windows_frame",
     "portfolio_artifact_root",
     "cost_sensitivity",
     "regime_diagnostics",
@@ -96,8 +103,11 @@ __all__ = [
     "PortfolioState",
     "PortfolioTransition",
     "PortfolioDQNTrainingResult",
+    "action_config_record",
+    "cumulative_learning_return",
     "evaluate_dqn",
     "load_dqn_checkpoint",
     "save_dqn_checkpoint",
+    "simulator_config_record",
     "train_dqn",
 ]

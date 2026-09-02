@@ -128,7 +128,18 @@ class TradeCalendarManager:
         if trade_step is None:
             trade_step = self.get_trade_step()
         calendar_index = self.start_index + trade_step - shift
-        return self._calendar[calendar_index], epsilon_change(self._calendar[calendar_index + 1])
+        start_time = self._calendar[calendar_index]
+        next_index = calendar_index + 1
+        if next_index < len(self._calendar):
+            return start_time, epsilon_change(self._calendar[next_index])
+        if calendar_index == len(self._calendar) - 1:
+            # There is no right-boundary entry after the last loaded session.
+            # Keep the final interval valid without inventing a future calendar
+            # date. Once new data is loaded, the normal branch above is used.
+            return start_time, start_time
+        raise IndexError(
+            f"calendar index {calendar_index} is out of bounds for calendar size {len(self._calendar)}"
+        )
 
     def get_data_cal_range(self, rtype: str = "full") -> Tuple[int, int]:
         """

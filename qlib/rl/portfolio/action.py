@@ -29,6 +29,10 @@ class PortfolioAction(IntEnum):
     VOLATILITY_ADJUSTED = 5
     REDUCE_EXPOSURE = 6
     PARTIAL_REBALANCE = 7
+    INCREASE_EXPOSURE = 8
+    TOP_SCORE_CONCENTRATED = 9
+    ROTATE_WORST_TO_BEST = 10
+    DEFENSIVE_VOLATILITY = 11
 
 
 @dataclass(frozen=True)
@@ -42,15 +46,38 @@ class PortfolioActionConfig:
     conservative_equity: float = 0.50
     standard_equity: float = 0.80
     aggressive_equity: float = 0.95
+    increase_exposure_ratio: float = 0.25
+    concentrated_holdings: int = 5
+    concentrated_equity: float = 0.95
+    rotation_count: int = 2
+    defensive_equity: float = 0.50
     max_holdings: Optional[int] = None
     tolerance: float = 1e-8
 
     def __post_init__(self) -> None:
-        budgets = (self.conservative_equity, self.standard_equity, self.aggressive_equity)
+        budgets = (
+            self.conservative_equity,
+            self.standard_equity,
+            self.aggressive_equity,
+            self.concentrated_equity,
+            self.defensive_equity,
+        )
         if not all(np.isfinite(value) and 0.0 <= value <= 1.0 for value in budgets):
             raise ValueError("Equity budgets must be finite values between zero and one.")
         if not self.conservative_equity <= self.standard_equity <= self.aggressive_equity:
             raise ValueError("Equity budgets must be ordered conservative <= standard <= aggressive.")
+        if not 0.0 < self.increase_exposure_ratio <= 1.0:
+            raise ValueError("increase_exposure_ratio must be in (0, 1].")
+        if self.defensive_equity > self.standard_equity:
+            raise ValueError("defensive_equity must not exceed standard_equity.")
+        if self.concentrated_equity < self.standard_equity:
+            raise ValueError("concentrated_equity must not be below standard_equity.")
+        for name, value in (
+            ("concentrated_holdings", self.concentrated_holdings),
+            ("rotation_count", self.rotation_count),
+        ):
+            if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer.")
         if self.max_holdings is not None and (
             isinstance(self.max_holdings, bool)
             or not isinstance(self.max_holdings, Integral)
@@ -139,6 +166,39 @@ def build_target_weights(
         cfg.tolerance,
     )
 
+    if resolved_action == PortfolioAction.INCREASE_EXPOSURE:
+        target = current.copy()
+        additional_equity = cash * cfg.increase_exposure_ratio
+        positive_existing = positive_and_tradable & (current > cfg.tolerance)
+        if np.any(positive_existing):
+            allocation = np.where(positive_existing, current, 0.0)
+        else:
+            allocation = np.where(positive_and_tradable, score_values, 0.0)
+        allocation_sum = float(allocation.sum())
+        if allocation_sum > 0.0:
+            target += allocation / allocation_sum * additional_equity
+        return _finalize(target, cfg.tolerance)
+
+    if resolved_action == PortfolioAction.ROTATE_WORST_TO_BEST:
+        target = current.copy()
+        held_tradable = tradable_mask & (current > cfg.tolerance)
+        candidates = tradable_mask & ~held_tradable & (score_values > 0.0)
+        held_indexes = np.flatnonzero(held_tradable)
+        candidate_indexes = np.flatnonzero(candidates)
+        replacement_count = min(cfg.rotation_count, len(held_indexes), len(candidate_indexes))
+        worst_indexes = held_indexes[
+            np.argsort(score_values[held_indexes], kind="stable")[:replacement_count]
+        ]
+        best_indexes = candidate_indexes[
+            np.argsort(-score_values[candidate_indexes], kind="stable")[:replacement_count]
+        ]
+        released_weight = float(target[worst_indexes].sum())
+        target[worst_indexes] = 0.0
+        best_score_sum = float(score_values[best_indexes].sum())
+        if released_weight > 0.0 and best_score_sum > 0.0:
+            target[best_indexes] += score_values[best_indexes] / best_score_sum * released_weight
+        return _finalize(target, cfg.tolerance)
+
     if resolved_action == PortfolioAction.EQUAL_WEIGHT:
         target = _weighted_target(locked, positive_and_tradable, np.ones_like(score_values), 1.0)
     elif resolved_action == PortfolioAction.CONSERVATIVE_SCORE:
@@ -157,6 +217,35 @@ def build_target_weights(
             where=eligible,
         )
         target = _weighted_target(locked, eligible, adjusted_scores, cfg.standard_equity)
+    elif resolved_action == PortfolioAction.TOP_SCORE_CONCENTRATED:
+        concentrated_limit = cfg.concentrated_holdings
+        if cfg.max_holdings is not None:
+            concentrated_limit = min(concentrated_limit, cfg.max_holdings)
+        concentrated_eligible = _limit_eligible_holdings(
+            positive_and_tradable,
+            score_values,
+            locked,
+            concentrated_limit,
+            cfg.tolerance,
+        )
+        target = _weighted_target(
+            locked,
+            concentrated_eligible,
+            score_values,
+            cfg.concentrated_equity,
+        )
+    elif resolved_action == PortfolioAction.DEFENSIVE_VOLATILITY:
+        if volatility_values is None:
+            raise ValueError("volatility is required for DEFENSIVE_VOLATILITY.")
+        valid_volatility = np.isfinite(volatility_values) & (volatility_values > 0.0)
+        eligible = positive_and_tradable & valid_volatility
+        adjusted_scores = np.divide(
+            score_values,
+            volatility_values,
+            out=np.zeros_like(score_values),
+            where=eligible,
+        )
+        target = _weighted_target(locked, eligible, adjusted_scores, cfg.defensive_equity)
     elif resolved_action == PortfolioAction.PARTIAL_REBALANCE:
         standard_target = _weighted_target(locked, positive_and_tradable, score_values, cfg.standard_equity)
         target = 0.5 * current + 0.5 * standard_target

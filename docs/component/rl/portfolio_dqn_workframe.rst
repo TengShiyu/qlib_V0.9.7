@@ -107,6 +107,18 @@ available to DQN. The initial action vocabulary is:
    * - 7
      - Partial rebalance
      - Move halfway toward the standard score portfolio.
+   * - 8
+     - Increase exposure
+     - Invest 25 percent of available cash into positive-score holdings or candidates.
+   * - 9
+     - Top-score concentrated
+     - Allocate 95 percent equity to at most five highest positive-score stocks.
+   * - 10
+     - Rotate worst to best
+     - Replace up to two weak holdings only when the same number of eligible replacements exists.
+   * - 11
+     - Defensive volatility
+     - Allocate 50 percent equity using score divided by volatility.
 
 Each command must produce a portfolio satisfying these invariants:
 
@@ -176,15 +188,19 @@ One environment transition follows this sequence:
 #. Update portfolio value and post-return weights.
 #. Advance to the next decision date.
 
-The initial reward is:
+The learning reward is:
 
 .. code-block:: text
 
-    reward(t) = gross portfolio return(t, t+2) - transaction costs(t)
+    portfolio_net_return(t) = gross_return(t) - transaction_cost(t)
+    one_way_turnover(t) = max(buy_weight(t), sell_weight(t))
+    turnover_penalty(t) = turnover_penalty_rate * one_way_turnover(t)
+    learning_reward(t) = portfolio_net_return(t) - turnover_penalty(t)
 
 Transaction costs are calculated from executed weights and charged exactly
-once. Risk penalties may be added later as independently configured reward
-components.
+once. The turnover penalty is calculated from executed target weights. It
+changes only the DQN learning signal; portfolio value uses
+``portfolio_net_return`` and does not treat the penalty as a real cash cost.
 
 Deliverables
 ------------
@@ -205,7 +221,8 @@ Integrate the simulator with QlibRL's existing component boundaries:
 * ``Reward`` calculates the scalar learning signal.
 * ``EnvWrapper`` supplies the Gym-compatible environment interface.
 
-The action space is ``Discrete(8)`` in the initial version. The observation
+The action space is ``Discrete(12)`` and the observation contains 65 values:
+17 global features and four predicted properties for each action. The observation
 must have a fixed shape even when universe membership changes. A practical
 first observation contains:
 
@@ -355,3 +372,14 @@ Each phase is a gate. Later work must not be used to hide unresolved failures
 in an earlier phase. In particular, DQN training begins only after the data,
 action construction, portfolio accounting, and market comparison are
 trustworthy.
+
+Shared Rolling Checkpoint Lifecycle
+===================================
+
+Rolling RL strategies must stage checkpoints for the exact dynamically
+generated window IDs. The official checkpoint directory is replaced only
+after every expected checkpoint exists. A successful replacement clears the
+previous set, including obsolete windows from a longer earlier run. A failed
+or incomplete run removes staging and leaves the last completed set intact.
+The implementation is shared RL infrastructure rather than DQN-specific
+strategy behavior.

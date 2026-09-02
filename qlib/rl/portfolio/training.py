@@ -42,7 +42,7 @@ def train_dqn(
     simulator_config: PortfolioSimulatorConfig = PortfolioSimulatorConfig(),
     action_config: PortfolioActionConfig = PortfolioActionConfig(),
 ) -> PortfolioDQNTrainingResult:
-    """Train on one chronological split and select by validation total return."""
+    """Train on one chronological split and select by penalized validation reward."""
 
     set_global_seed(dqn_config.random_seed)
     policy = make_dqn_policy(dqn_config)
@@ -77,8 +77,9 @@ def train_dqn(
             name="validation",
         )
         validation_return = validation.metrics["total_return"]
-        if validation_return > best_return:
-            best_return = validation_return
+        validation_learning_return = cumulative_learning_return(validation.transitions)
+        if validation_learning_return > best_return:
+            best_return = validation_learning_return
             best_epoch = epoch
             best_state = copy.deepcopy(policy.state_dict())
         records.append(
@@ -90,6 +91,7 @@ def train_dqn(
                 "mean_loss": float(np.mean(losses)),
                 "mean_gradient_norm": float(np.mean(gradient_norms)),
                 "validation_total_return": validation_return,
+                "validation_learning_return": validation_learning_return,
                 "validation_sharpe_ratio": validation.metrics["sharpe_ratio"],
             }
         )
@@ -144,8 +146,12 @@ def evaluate_dqn(
                 "reward_end_date": transition.reward_end_date,
                 "action": action_name,
                 "gross_return": transition.reward.gross_return,
-                "net_return": reward,
+                "portfolio_net_return": transition.reward.net_return,
+                "net_return": transition.reward.net_return,
+                "turnover_penalty": transition.reward.turnover_penalty,
+                "learning_reward": transition.reward.learning_reward,
                 "portfolio_value": transition.ending_value,
+                "one_way_turnover": transition.turnover.one_way,
                 "turnover": transition.turnover.one_way,
                 "transaction_cost": transition.reward.transaction_cost,
                 "cash_exposure": transition.target.cash_weight,
@@ -194,6 +200,29 @@ def config_record(config: PortfolioDQNConfig) -> Mapping[str, object]:
     record = asdict(config)
     record["hidden_dims"] = list(config.hidden_dims)
     return record
+
+
+def action_config_record(config: PortfolioActionConfig) -> Mapping[str, object]:
+    """Return every portfolio-action setting in a stable serializable form."""
+
+    return asdict(config)
+
+
+def simulator_config_record(config: PortfolioSimulatorConfig) -> Mapping[str, object]:
+    """Return every simulator, cost, and learning-reward setting."""
+
+    return asdict(config)
+
+
+def cumulative_learning_return(transitions: pd.DataFrame) -> float:
+    """Compound the reward actually optimized by DQN over an evaluation episode."""
+
+    if "learning_reward" not in transitions:
+        raise ValueError("Evaluation transitions must contain learning_reward.")
+    rewards = transitions["learning_reward"].to_numpy(dtype=np.float64)
+    if rewards.size == 0 or not np.all(np.isfinite(rewards)):
+        raise ValueError("learning_reward must contain at least one finite value.")
+    return float(np.prod(1.0 + rewards) - 1.0)
 
 
 def set_global_seed(seed: int) -> None:

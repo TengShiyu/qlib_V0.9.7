@@ -29,9 +29,9 @@ The authoritative upstream configuration is:
 .. code-block:: text
 
     /home/shiyu/qlib_experiment/
-        alpha158_szrankguard_rolling_horizon2_step10/
+        alpha158_szrankguard_rolling_DQN/
         configs/
-        workflow_config_szrankguard_topk20drop2_rolling_h2_step10.yaml
+        workflow_config_szrankguard_topk20drop2_rolling_DQN.yaml
 
 The portfolio project inherits the following settings from that experiment:
 
@@ -173,6 +173,25 @@ separate discrete weight to every stock. The initial action vocabulary is:
    * - 7
      - Partial rebalance
      - Move halfway toward the standard score portfolio.
+   * - 8
+     - Increase exposure
+     - Invest 25 percent of available cash into positive-score holdings or candidates.
+   * - 9
+     - Top-score concentrated
+     - Allocate 95 percent equity to at most five highest positive-score stocks.
+   * - 10
+     - Rotate worst to best
+     - Replace up to two weak holdings only when the same number of eligible replacements exists.
+   * - 11
+     - Defensive volatility
+     - Allocate 50 percent equity using score divided by volatility.
+
+IDs 0 through 7 keep their original meanings. The additional action defaults
+are configurable as ``increase_exposure_ratio=0.25``,
+``concentrated_holdings=5``, ``concentrated_equity=0.95``,
+``rotation_count=2``, and ``defensive_equity=0.50``. This expansion changes
+the policy interface to 65 observation features and 12 Q-values, so existing
+8-action checkpoints must be retrained.
 
 Every constructed target must be long-only, finite, non-negative, and sum to
 one including cash. A non-tradable stock cannot receive new allocation.
@@ -182,12 +201,14 @@ can be sold.
 Reward and Cost Contract
 ========================
 
-The initial reward is:
+The current learning reward is:
 
 .. code-block:: text
 
-    reward = gross portfolio return over two sessions
-             - transaction costs
+    portfolio_net_return = gross return over two sessions - transaction costs
+    one_way_turnover = max(buy weight, sell weight)
+    turnover_penalty = turnover_penalty_rate * one_way_turnover
+    learning_reward = portfolio_net_return - turnover_penalty
 
 To reproduce the upstream experiment, the initial integration uses:
 
@@ -196,11 +217,17 @@ To reproduce the upstream experiment, the initial integration uses:
     buy cost:     0
     sell cost:    0
     minimum cost: 0
+    turnover penalty rate: 0.002
 
 Zero costs are the currently requested engineering setting, not an assumption
 that trading is free. Costs must be calculated from executed turnover and
 charged exactly once when nonzero values are configured. Each result uses the
 costs from its selected workflow without generating a second cost scenario.
+
+The turnover penalty is an optimization preference, not a broker fee. It is
+calculated from executed target weights and affects DQN training and validation
+equally. Portfolio value, reported account return, and market comparison use
+``portfolio_net_return`` and never deduct this artificial penalty.
 
 The runtime reads ``account``, ``open_cost``, ``close_cost``, and ``min_cost``
 from the selected workflow YAML. ``open_cost`` maps to the simulator's buy

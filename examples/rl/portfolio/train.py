@@ -24,7 +24,7 @@ from qlib.rl.portfolio import (
     train_dqn,
 )
 from qlib.rl.portfolio.data import load_qlib_calendar, load_qlib_market_frame
-from qlib.rl.portfolio.training import config_record
+from qlib.rl.portfolio.training import action_config_record, config_record, simulator_config_record
 
 
 DEFAULT_PREDICTIONS = Path(
@@ -32,8 +32,8 @@ DEFAULT_PREDICTIONS = Path(
     "58da01314bfa4295a96b952d5dbb7db4/artifacts/pred.pkl"
 )
 DEFAULT_WORKFLOW_CONFIG = Path(
-    "/home/shiyu/qlib_experiment/alpha158_szrankguard_rolling_horizon2_step10/configs/"
-    "workflow_config_szrankguard_topk20drop2_rolling_h2_step10.yaml"
+    "/home/shiyu/qlib_experiment/alpha158_szrankguard_rolling_DQN/configs/"
+    "workflow_config_szrankguard_topk20drop2_rolling_DQN.yaml"
 )
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -51,14 +51,14 @@ def main() -> None:
     dqn_config = PortfolioDQNConfig(epochs=args.epochs, random_seed=args.random_seed)
     predictions = load_prediction_frame(
         args.predictions,
-        workflow.rl_segments["train"].start,
-        workflow.rl_segments["test"].end,
+        workflow.rolling_segments["train"].start,
+        workflow.rolling_segments["test"].end,
     )
     instruments = tuple(
         sorted(predictions.index.get_level_values("instrument").unique())
     )
-    market_start = workflow.rl_segments["train"].start - pd.Timedelta(days=90)
-    market_end = workflow.rl_segments["test"].end
+    market_start = workflow.rolling_segments["train"].start - pd.Timedelta(days=90)
+    market_end = workflow.rolling_segments["test"].end
     calendar = load_qlib_calendar(
         workflow.provider_uri, workflow.region, market_start, market_end
     )
@@ -74,7 +74,7 @@ def main() -> None:
             predictions=predictions,
             market=market,
             calendar=calendar,
-            date_range=workflow.rl_segments[name],
+            date_range=workflow.rolling_segments[name],
             instruments=instruments,
         )
         for name in ("train", "valid", "test")
@@ -118,21 +118,16 @@ def main() -> None:
         "predictions": str(args.predictions.expanduser()),
         "provider_uri": workflow.provider_uri,
         "benchmark": workflow.benchmark,
-        "simulator": {
-            "initial_value": workflow.simulator.initial_value,
-            "buy_cost": workflow.simulator.buy_cost,
-            "sell_cost": workflow.simulator.sell_cost,
-            "min_cost": workflow.simulator.min_cost,
-        },
+        "simulator": simulator_config_record(workflow.simulator),
         "best_epoch": result.best_epoch,
         "split_transition_counts": {
             name: len(data.decision_dates) for name, data in datasets.items()
         },
-        "rl_segments": {
+        "rolling_segments": {
             name: {"start": str(segment.start.date()), "end": str(segment.end.date())}
-            for name, segment in workflow.rl_segments.items()
+            for name, segment in workflow.rolling_segments.items()
         },
-        "action": {"max_holdings": workflow.action.max_holdings},
+        "action": action_config_record(workflow.action),
     }
     with (output_dir / "training_config.json").open("w", encoding="utf-8") as file:
         json.dump(configuration, file, indent=2)

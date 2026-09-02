@@ -25,11 +25,12 @@ from qlib.rl.portfolio import (
 )
 from qlib.rl.portfolio.benchmark import run_market_benchmark
 from qlib.rl.portfolio.data import load_qlib_calendar, load_qlib_market_frame
+from qlib.rl.portfolio.training import action_config_record, simulator_config_record
 
 
 DEFAULT_WORKFLOW_CONFIG = Path(
-    "/home/shiyu/qlib_experiment/alpha158_szrankguard_rolling_horizon2_step10/configs/"
-    "workflow_config_szrankguard_topk20drop2_rolling_h2_step10.yaml"
+    "/home/shiyu/qlib_experiment/alpha158_szrankguard_rolling_DQN/configs/"
+    "workflow_config_szrankguard_topk20drop2_rolling_DQN.yaml"
 )
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -60,24 +61,26 @@ def main() -> None:
     workflow = load_portfolio_workflow_config(training_record["workflow_config"])
     active_segments = {
         name: {"start": str(segment.start.date()), "end": str(segment.end.date())}
-        for name, segment in workflow.rl_segments.items()
+        for name, segment in workflow.rolling_segments.items()
     }
-    if training_record.get("rl_segments") != active_segments:
+    if training_record.get("rolling_segments") != active_segments:
         raise ValueError("Configured RL segments do not match the saved training record.")
-    if training_record.get("action") != {"max_holdings": workflow.action.max_holdings}:
+    if training_record.get("action") != action_config_record(workflow.action):
         raise ValueError("Configured portfolio action settings do not match the saved training record.")
+    if training_record.get("simulator") != simulator_config_record(workflow.simulator):
+        raise ValueError("Configured simulator settings do not match the saved training record.")
 
     policy = load_dqn_checkpoint(training_dir / "best_policy.pt", dqn_config)
     predictions = load_prediction_frame(
         training_record["predictions"],
-        workflow.rl_segments["valid"].start,
-        workflow.rl_segments["test"].end,
+        workflow.rolling_segments["valid"].start,
+        workflow.rolling_segments["test"].end,
     )
     instruments = tuple(
         sorted(predictions.index.get_level_values("instrument").unique())
     )
-    market_start = workflow.rl_segments["train"].start - pd.Timedelta(days=90)
-    market_end = workflow.rl_segments["test"].end
+    market_start = workflow.rolling_segments["train"].start - pd.Timedelta(days=90)
+    market_end = workflow.rolling_segments["test"].end
     calendar = load_qlib_calendar(
         workflow.provider_uri, workflow.region, market_start, market_end
     )
@@ -103,7 +106,7 @@ def main() -> None:
             predictions=predictions,
             market=asset_market,
             calendar=calendar,
-            date_range=workflow.rl_segments[split_name],
+            date_range=workflow.rolling_segments[split_name],
             instruments=instruments,
         )
         results = {

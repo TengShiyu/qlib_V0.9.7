@@ -85,6 +85,22 @@ weight to every stock. The initial action vocabulary is:
 | 5 | Volatility adjusted | Weight eligible stocks by score divided by volatility |
 | 6 | Reduce exposure | Move halfway from current risky assets toward cash |
 | 7 | Partial rebalance | Move halfway toward the standard score-weight portfolio |
+| 8 | Increase exposure | Invest 25% of cash into positive-score existing holdings, or positive-score candidates when none are held |
+| 9 | Top-score concentrated | Allocate 95% equity to at most five highest positive-score stocks |
+| 10 | Rotate worst to best | Replace weak tradable holdings only when an equal number of positive-score replacements is available |
+| 11 | Defensive volatility | Allocate 50% equity using score divided by volatility |
+
+IDs 0 through 7 retain their original meanings. Adding IDs 8 through 11
+changes both the observation and DQN output dimensions, so an 8-action
+checkpoint cannot be reused; the DQN must be retrained.
+
+```yaml
+increase_exposure_ratio: 0.25
+concentrated_holdings: 5
+concentrated_equity: 0.95
+rotation_count: 2
+defensive_equity: 0.50
+```
 
 The action vocabulary is configuration-backed and must remain stable within a
 trained model version. Changing its meaning invalidates existing checkpoints.
@@ -102,16 +118,20 @@ Version 1 is long-only:
 
 ### Reward
 
-The initial reward is the net portfolio return over the two-session holding
-period:
+The DQN learning reward over the two-session holding period is:
 
 ```text
-reward_t = gross_return(close(t+1), close(t+3)) - transaction_cost_t
+portfolio_net_return_t = gross_return_t - transaction_cost_t
+one_way_turnover_t = max(buy_weight_t, sell_weight_t)
+turnover_penalty_t = turnover_penalty_rate * one_way_turnover_t
+learning_reward_t = portfolio_net_return_t - turnover_penalty_t
 ```
 
 Turnover and transaction cost must be calculated from executed weights, not
-from an infeasible raw target. Risk penalties may be introduced later as
-separately configured reward components.
+from an infeasible raw target. ``learning_reward`` trains DQN, while portfolio
+value and performance use ``portfolio_net_return`` so the artificial penalty
+is never deducted as real money. The active experiment configures
+``turnover_penalty: 0.002``.
 
 ## Data contracts
 
@@ -164,15 +184,15 @@ models internally.
 interpreter, discrete action interpreter, and net-return reward with QlibRL's
 `EnvWrapper`. The resulting Gym interface has:
 
-- `Discrete(8)` actions with the stable IDs documented above;
-- a 49-value `float32` observation;
+- `Discrete(12)` actions with the stable IDs documented above;
+- a 65-value `float32` observation;
 - one scalar net two-session return per step;
 - one independent episode for the supplied chronological data split.
 
 The observation contains 17 global features describing portfolio exposure,
 recent realized portfolio returns, tradability, and cross-sectional score and
 volatility summaries. It also contains four predicted properties for each of
-the eight candidate portfolios: equity exposure, turnover, score exposure,
+the twelve candidate portfolios: equity exposure, turnover, score exposure,
 and diagonal volatility. Realized forward asset returns are outcomes owned by
 the simulator and are never passed to the state interpreter.
 
@@ -210,8 +230,8 @@ conda run -n qlib_rl_env python examples/rl/portfolio/train.py
 ```
 
 The command trains on the engineering training split, selects the best epoch
-using validation total return only, saves and reloads the checkpoint, and then
-runs one test episode. The model receives 49 features and emits eight raw
+using penalized validation learning return, saves and reloads the checkpoint, and then
+runs one test episode. The model receives 65 features and emits twelve raw
 Q-values. Training uses replay sampling, linearly decayed epsilon-greedy
 exploration, a target network, Huber loss, gradient clipping, and fixed random
 seeds.
@@ -256,9 +276,19 @@ with a live-execution audit from that same run:
 These files describe the Qlib execution path. They are not copied from the
 separate offline simulator.
 
+## Rolling checkpoint lifecycle
+
+Rolling RL trainers use the shared `qlib.rl.checkpoint.RollingCheckpointRun`
+manager. It accepts the dynamically generated window IDs, stages the complete
+new checkpoint set, and publishes it only after every expected window exists.
+Publication replaces and clears the previous set, so a shorter later run does
+not leave stale window directories. An incomplete run discards only staging
+and preserves the previous completed set. This lifecycle is reusable by other
+rolling RL strategies; it is not specific to Portfolio DQN.
+
 ## Milestone 1 acceptance criteria
 
-- All eight actions produce deterministic target portfolios.
+- All twelve actions produce deterministic target portfolios.
 - Target portfolios satisfy the long-only, cash, sum-to-one, and tradability
   constraints.
 - Reward includes the configured transaction cost exactly once.
