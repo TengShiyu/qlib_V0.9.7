@@ -442,6 +442,7 @@ class PortAnaRecord(ACRecordTemp):
         }
         self.executor_config = config.get("executor", _default_executor_config)
         self.backtest_config = config["backtest"]
+
         self.all_freq = self._get_report_freq(self.executor_config)
         if risk_analysis_freq is None:
             risk_analysis_freq = [self.all_freq[0]]
