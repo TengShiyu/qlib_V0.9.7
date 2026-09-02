@@ -16,6 +16,7 @@ from .rule_strategy import (
 )
 
 from .cost_control import SoftTopkStrategy, SoftTopkStrategy_SMS
+from .rl_dqn import PortfolioDQNStrategy
 
 __all__ = [
     "TopkDropoutStrategy",
@@ -27,4 +28,5 @@ __all__ = [
     "SBBStrategyEMA",
     "SoftTopkStrategy",
     "SoftTopkStrategy_SMS",
+    "PortfolioDQNStrategy",
 ]
