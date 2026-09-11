@@ -234,34 +234,92 @@ class DJIAIndex(WIKIIndex):
 
 
 class SP500Index(WIKIIndex):
-    WIKISP500_CHANGES_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    WIKISP500_CHANGES_URLS = (
+        "https://en.wikipedia.org/wiki/Historical_components_of_the_S%26P_500",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+    )
+    KEEP_INSTRUMENTS_BACKUP = True
+    MIN_CURRENT_COMPONENTS = 450
+    MAX_CURRENT_COMPONENTS = 550
 
     @property
     def bench_start_date(self) -> pd.Timestamp:
         return pd.Timestamp("1999-01-01")
 
+    @staticmethod
+    def _normalize_column_name(column) -> str:
+        column_parts = column if isinstance(column, tuple) else (column,)
+        return " ".join(str(part).strip().lower() for part in column_parts)
+
+    def _extract_changes_table(self, html: str) -> pd.DataFrame:
+        for _df in pd.read_html(StringIO(html)):
+            _columns = list(_df.columns)
+            normalized_columns = {column: self._normalize_column_name(column) for column in _columns}
+            _date_col = next(
+                (column for column, name in normalized_columns.items() if "effective date" in name), None
+            )
+            _add_col = next(
+                (
+                    column
+                    for column, name in normalized_columns.items()
+                    if "added" in name and ("ticker" in name or "symbol" in name)
+                ),
+                None,
+            )
+            _remove_col = next(
+                (
+                    column
+                    for column, name in normalized_columns.items()
+                    if "removed" in name and ("ticker" in name or "symbol" in name)
+                ),
+                None,
+            )
+            if _date_col is not None and _add_col is not None and _remove_col is not None:
+                changes_df = _df.loc[:, [_date_col, _add_col, _remove_col]].copy()
+                changes_df.columns = [self.DATE_FIELD_NAME, self.ADD, self.REMOVE]
+                if changes_df.empty:
+                    raise ValueError("S&P 500 changes table is empty")
+                return changes_df
+        raise ValueError("Could not find an S&P 500 changes table")
+
+    def _download_changes_table(self) -> pd.DataFrame:
+        errors = []
+        headers = {"User-Agent": self._ua.random}
+        for url in self.WIKISP500_CHANGES_URLS:
+            try:
+                logger.info(f"try sp500 history changes source: {url}")
+                response = requests.get(url, headers=headers, timeout=30)
+                response.raise_for_status()
+                changes_df = self._extract_changes_table(response.text)
+                logger.info(f"use sp500 history changes source: {url}")
+                return changes_df
+            except Exception as exception:
+                errors.append(f"{url}: {exception}")
+                logger.warning(f"sp500 history changes source failed: {url}: {exception}")
+        raise ValueError("All S&P 500 changes sources failed: " + " | ".join(errors))
+
+    def validate_instruments(self, inst_df: pd.DataFrame) -> None:
+        super().validate_instruments(inst_df)
+        start_dates = pd.to_datetime(inst_df[self.START_DATE_FIELD], errors="coerce")
+        end_dates = pd.to_datetime(inst_df[self.END_DATE_FIELD], errors="coerce")
+        if start_dates.isna().any() or end_dates.isna().any():
+            raise ValueError("Generated S&P 500 instruments contain invalid dates")
+        if (start_dates > end_dates).any():
+            raise ValueError("Generated S&P 500 instruments contain an invalid date range")
+
+        active_count = inst_df.loc[
+            end_dates == self.DEFAULT_END_DATE, self.SYMBOL_FIELD_NAME
+        ].nunique()
+        if not self.MIN_CURRENT_COMPONENTS <= active_count <= self.MAX_CURRENT_COMPONENTS:
+            raise ValueError(
+                f"Suspicious S&P 500 active component count: {active_count}; "
+                f"expected {self.MIN_CURRENT_COMPONENTS}-{self.MAX_CURRENT_COMPONENTS}"
+            )
+
     def get_changes(self) -> pd.DataFrame:
         logger.info(f"get sp500 history changes......")
-        # NOTE: may update the index of the table
-        # Add headers to avoid 403 Forbidden error from Wikipedia
-        headers = {"User-Agent": self._ua.random}
-        response = requests.get(self.WIKISP500_CHANGES_URL, headers=headers, timeout=None)
-        response.raise_for_status()
-        changes_df = None
-        for _df in pd.read_html(StringIO(response.text)):
-            if not isinstance(_df.columns, pd.MultiIndex):
-                continue
-            _columns = list(_df.columns)
-            _date_col = next((col for col in _columns if col[0] == "Effective Date"), None)
-            _add_col = next((col for col in _columns if col[0] == "Added" and col[1] == "Ticker"), None)
-            _remove_col = next((col for col in _columns if col[0] == "Removed" and col[1] == "Ticker"), None)
-            if _date_col is not None and _add_col is not None and _remove_col is not None:
-                changes_df = _df.loc[:, [_date_col, _add_col, _remove_col]]
-                break
-        if changes_df is None:
-            raise ValueError("Could not find S&P 500 changes table from Wikipedia")
-        changes_df.columns = [self.DATE_FIELD_NAME, self.ADD, self.REMOVE]
-        changes_df[self.DATE_FIELD_NAME] = pd.to_datetime(changes_df[self.DATE_FIELD_NAME])
+        changes_df = self._download_changes_table()
+        changes_df[self.DATE_FIELD_NAME] = pd.to_datetime(changes_df[self.DATE_FIELD_NAME], errors="raise")
         calendar_limit = pd.to_datetime(max(self.calendar_list))
         local_calendar = self.instruments_dir.parent.joinpath("calendars", f"{self.freq}.txt")
         if local_calendar.exists():

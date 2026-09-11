@@ -1,5 +1,8 @@
-import sys
 import abc
+import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
 from typing import List
 
@@ -25,6 +28,7 @@ class IndexBase:
     REMOVE = "remove"
     ADD = "add"
     INST_PREFIX = ""
+    KEEP_INSTRUMENTS_BACKUP = False
 
     def __init__(
         self,
@@ -131,6 +135,59 @@ class IndexBase:
         """
         raise NotImplementedError("rewrite format_datetime")
 
+    def validate_instruments(self, inst_df: pd.DataFrame) -> None:
+        """Validate generated instruments before replacing the current file."""
+        missing_columns = set(self.INSTRUMENTS_COLUMNS) - set(inst_df.columns)
+        if missing_columns:
+            raise ValueError(f"missing instrument columns: {sorted(missing_columns)}")
+        if inst_df.empty:
+            raise ValueError(f"generated instruments are empty: {self.index_name}")
+        if inst_df.loc[:, self.INSTRUMENTS_COLUMNS].isna().any().any():
+            raise ValueError(f"generated instruments contain missing values: {self.index_name}")
+
+    def _save_instruments(self, inst_df: pd.DataFrame) -> None:
+        """Atomically save instruments and optionally retain one previous copy."""
+        self.validate_instruments(inst_df)
+        target_path = self.instruments_dir.joinpath(f"{self.index_name.lower()}.txt")
+        backup_path = target_path.with_suffix(f"{target_path.suffix}.bak")
+        temp_path = None
+        backup_temp_path = None
+
+        try:
+            file_descriptor, temp_name = tempfile.mkstemp(
+                dir=self.instruments_dir,
+                prefix=f".{target_path.name}.",
+                suffix=".tmp",
+            )
+            os.close(file_descriptor)
+            temp_path = Path(temp_name)
+            inst_df.to_csv(temp_path, sep="\t", index=False, header=None)
+
+            if target_path.exists():
+                os.chmod(temp_path, target_path.stat().st_mode & 0o777)
+            else:
+                os.chmod(temp_path, 0o644)
+
+            if self.KEEP_INSTRUMENTS_BACKUP and target_path.exists():
+                file_descriptor, backup_temp_name = tempfile.mkstemp(
+                    dir=self.instruments_dir,
+                    prefix=f".{backup_path.name}.",
+                    suffix=".tmp",
+                )
+                os.close(file_descriptor)
+                backup_temp_path = Path(backup_temp_name)
+                shutil.copy2(target_path, backup_temp_path)
+                os.replace(backup_temp_path, backup_path)
+                backup_temp_path = None
+
+            os.replace(temp_path, target_path)
+            temp_path = None
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+            if backup_temp_path is not None:
+                backup_temp_path.unlink(missing_ok=True)
+
     def save_new_companies(self):
         """save new companies
 
@@ -232,7 +289,5 @@ class IndexBase:
         if _inst_prefix:
             inst_df["save_inst"] = inst_df[self.SYMBOL_FIELD_NAME].apply(lambda x: f"{_inst_prefix}{x}")
         inst_df = self.format_datetime(inst_df)
-        inst_df.to_csv(
-            self.instruments_dir.joinpath(f"{self.index_name.lower()}.txt"), sep="\t", index=False, header=None
-        )
+        self._save_instruments(inst_df)
         logger.info(f"parse {self.index_name.lower()} companies finished.")
