@@ -33,6 +33,13 @@ CUR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CUR_DIR.parent.parent))
 
 from dump_bin import DumpDataUpdate
+from generate_szrankguard_universe import (
+    DEFAULT_SOURCE as SZRANKGUARD_DEFAULT_SOURCE,
+    NoSupportFilesError,
+    read_symbols as read_szrankguard_symbols,
+    read_reference_symbols,
+    write_universe as write_szrankguard_universe,
+)
 from data_collector.base import BaseCollector, BaseNormalize, BaseRun, Normalize
 from data_collector.utils import (
     deco_retry,
@@ -1008,6 +1015,7 @@ class Run(BaseRun):
         delay: float = 0.1,
         stale_ratio: float = 0.001,
         exists_skip: bool = False,
+        szrankguard_source_dir: str = str(SZRANKGUARD_DEFAULT_SOURCE),
     ):
         """update yahoo data to bin
 
@@ -1030,6 +1038,10 @@ class Run(BaseRun):
             default 0.001 (0.1%).
         exists_skip: bool
             exists skip, by default False
+        szrankguard_source_dir: str
+            US universe source containing <symbol>_support.csv files; defaults to
+            /mnt/hdd/qlib_data/SZRankGuard_symbol_support. Missing or empty sources
+            are skipped with a warning, preserving any existing szrankguard.txt.
         Notes
         -----
             If the data in qlib_data_dir is incomplete, np.nan will be populated to trading_date for the previous trading day
@@ -1134,6 +1146,32 @@ class Run(BaseRun):
                 output_name="tradable_us",
                 source_names=("all", "sp500", "nasdaq100", "djia", "sp400"),
             )
+            self.generate_szrankguard_instruments(qlib_data_1d_dir, szrankguard_source_dir)
+
+    @staticmethod
+    def generate_szrankguard_instruments(
+        qlib_data_1d_dir: str,
+        szrankguard_source_dir: str = str(SZRANKGUARD_DEFAULT_SOURCE),
+    ):
+        """Regenerate SZRankGuard from support filenames in the active data directory."""
+        source_dir = Path(szrankguard_source_dir).expanduser()
+        try:
+            symbols = read_szrankguard_symbols(source_dir)
+        except (NotADirectoryError, NoSupportFilesError) as exc:
+            logger.warning(f"skip SZRankGuard generation: {exc}; existing universe preserved")
+            return None
+
+        instruments_dir = Path(qlib_data_1d_dir).expanduser().resolve() / "instruments"
+        reference_symbols = read_reference_symbols(instruments_dir / "all.txt")
+        unmatched = [symbol for symbol in symbols if symbol not in reference_symbols]
+        output_path = instruments_dir / "szrankguard.txt"
+        write_szrankguard_universe(symbols, output_path, "1999-01-01", "2099-12-31")
+        logger.info(f"generated {output_path} from {source_dir}; symbols={len(symbols)}")
+        if unmatched:
+            logger.warning(f"SZRankGuard symbols absent from all.txt ({len(unmatched)}): {', '.join(unmatched)}")
+        else:
+            logger.info("SZRankGuard symbols absent from all.txt (0): none")
+        return output_path
 
     @staticmethod
     def generate_tradable_instruments(

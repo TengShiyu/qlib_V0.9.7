@@ -279,6 +279,31 @@ generate `tradable_us.txt` for use as `exchange_kwargs.codes`.
      python scripts/data_collector/yahoo/collector.py generate_tradable_instruments --qlib_data_1d_dir ~/.qlib/qlib_data/us_data
      ```
 
+### SZRankGuard universe in the daily collector
+
+For US updates, `collector_daily.py update_data_to_bin` automatically regenerates
+`<qlib_data_1d_dir>/instruments/szrankguard.txt` immediately after `tradable_us.txt`.
+It reads symbols from `<symbol>_support.csv` filenames in
+`/mnt/hdd/qlib_data/SZRankGuard_symbol_support`. Override that source with
+`--szrankguard_source_dir /path/to/support` if needed. The existing daily updater
+requires no new cron entry or arguments when using the default source.
+
+The workflow is: update prices and Qlib binaries → refresh US index universes →
+generate `tradable_us.txt` → generate `szrankguard.txt`.
+SZRankGuard symbols are uppercased, deduplicated, sorted, and assigned the date
+range `1999-01-01` through `2099-12-31`, matching the standalone generator.
+Symbols absent from the updated `all.txt` are logged and retained in the output.
+The universe is replaced atomically. A missing source directory or one without
+support CSV files produces a warning and preserves any existing universe.
+The collector does not create or download the support CSV files.
+
+To regenerate only this universe:
+
+```bash
+python scripts/data_collector/yahoo/collector_daily.py generate_szrankguard_instruments \
+  --qlib_data_1d_dir /home/shiyu/qlib_data/us_data
+```
+
 ### Automatic update of daily frequency data(from yahoo finance)
   > It is recommended that users update the data manually once and then set it to update automatically.
   >

@@ -16,6 +16,10 @@ DEFAULT_REFERENCE = Path("/mnt/hdd/qlib_data/us_data/instruments/all.txt")
 FILE_SUFFIX = "_support.csv"
 
 
+class NoSupportFilesError(ValueError):
+    """The source directory contains no support CSV symbols."""
+
+
 def iso_date(value: str) -> str:
     """Validate and normalize an ISO date supplied on the command line."""
     try:
@@ -43,7 +47,7 @@ def read_symbols(source_dir: Path) -> list[str]:
         symbols.add(symbol)
 
     if not symbols:
-        raise ValueError(f"no *{FILE_SUFFIX} files found in {source_dir}")
+        raise NoSupportFilesError(f"no *{FILE_SUFFIX} files found in {source_dir}")
     return sorted(symbols)
 
 
