@@ -492,6 +492,43 @@ class DumpDataUpdate(DumpDataBase):
     def _dump_instruments(self):
         pass
 
+    def _overwrite_existing_bin_values(self, df: pd.DataFrame):
+        """Replace finite values for dates already present in existing feature bins."""
+        if df.empty:
+            return
+
+        code = fname_to_code(str(df.iloc[0][self.symbol_field_name]).lower())
+        frame = df.drop_duplicates(self.date_field_name).copy()
+        frame[self.date_field_name] = pd.to_datetime(frame[self.date_field_name])
+        calendar_index = {date: index for index, date in enumerate(self._old_calendar_list)}
+        positions = frame[self.date_field_name].map(calendar_index).fillna(-1).astype(int).to_numpy()
+        features_dir = self._features_dir.joinpath(code_to_fname(code).lower())
+
+        for field in self.get_dump_fields(frame.columns):
+            bin_path = features_dir.joinpath(f"{field.lower()}.{self.freq}{self.DUMP_FILE_SUFFIX}")
+            if field not in frame.columns or not bin_path.exists():
+                continue
+
+            bin_data = np.fromfile(bin_path, dtype="<f4")
+            if len(bin_data) < 2:
+                continue
+            start_index = int(bin_data[0])
+            offsets = positions - start_index
+            field_values = pd.to_numeric(frame[field], errors="coerce").to_numpy(dtype="<f4")
+            valid = np.isfinite(field_values) & (offsets >= 0) & (offsets < len(bin_data) - 1)
+            if not valid.any():
+                continue
+
+            bin_data[1 + offsets[valid]] = field_values[valid]
+            temp_path = bin_path.with_name(f"{bin_path.name}.tmp")
+            bin_data.astype("<f4").tofile(temp_path)
+            temp_path.replace(bin_path)
+
+    def _dump_bin_update(self, df: pd.DataFrame, update_calendars: List[pd.Timestamp]):
+        self._overwrite_existing_bin_values(df)
+        if update_calendars:
+            self._dump_bin(df, update_calendars)
+
     def _dump_features(self):
         logger.info("start dump features......")
         error_code = {}
@@ -513,7 +550,7 @@ class DumpDataUpdate(DumpDataBase):
                     )
                     if _update_calendars:
                         self._update_instruments[_code][self.INSTRUMENTS_END_FIELD] = self._format_datetime(_end)
-                        futures[executor.submit(self._dump_bin, _df, _update_calendars)] = _code
+                    futures[executor.submit(self._dump_bin_update, _df, _update_calendars)] = _code
                 else:
                     # new stock
                     _dt_range = self._update_instruments.setdefault(_code, dict())
