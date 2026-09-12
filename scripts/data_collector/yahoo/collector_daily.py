@@ -33,6 +33,13 @@ CUR_DIR = Path(__file__).resolve().parent
 sys.path.append(str(CUR_DIR.parent.parent))
 
 from dump_bin import DumpDataUpdate
+from generate_szrankguard_universe import (
+    DEFAULT_SOURCE as SZRANKGUARD_DEFAULT_SOURCE,
+    NoSupportFilesError,
+    read_symbols as read_szrankguard_symbols,
+    read_reference_symbols,
+    write_universe as write_szrankguard_universe,
+)
 from data_collector.base import BaseCollector, BaseNormalize, BaseRun, Normalize
 from data_collector.utils import (
     deco_retry,
@@ -539,7 +546,12 @@ class YahooNormalize1d(YahooNormalize, ABC):
 
 class YahooNormalize1dExtend(YahooNormalize1d):
     def __init__(
-        self, old_qlib_data_dir: [str, Path], date_field_name: str = "date", symbol_field_name: str = "symbol", **kwargs
+        self,
+        old_qlib_data_dir: [str, Path],
+        date_field_name: str = "date",
+        symbol_field_name: str = "symbol",
+        refresh_start_date=None,
+        **kwargs,
     ):
         """
 
@@ -554,6 +566,7 @@ class YahooNormalize1dExtend(YahooNormalize1d):
         """
         super(YahooNormalize1dExtend, self).__init__(date_field_name, symbol_field_name)
         self.column_list = ["open", "high", "low", "close", "volume", "factor", "change"]
+        self.refresh_start_date = pd.Timestamp(refresh_start_date) if refresh_start_date is not None else None
         self.old_qlib_data = self._get_old_data(old_qlib_data_dir)
 
     def _get_old_data(self, qlib_data_dir: [str, Path]):
@@ -577,12 +590,26 @@ class YahooNormalize1dExtend(YahooNormalize1d):
         if str(symbol_name).upper() not in old_symbol_list:
             return df.reset_index()
         old_df = self.old_qlib_data.loc[str(symbol_name).upper()]
-        latest_date = old_df.index[-1]
+        old_valid_close = old_df["close"].replace([np.inf, -np.inf], np.nan).dropna()
+        new_valid_close = df["close"].replace([np.inf, -np.inf], np.nan).dropna()
+        valid_overlap = old_valid_close.index.intersection(new_valid_close.index)
+        if self.refresh_start_date is not None:
+            # Anchor before the refresh window so its existing rows are emitted again.
+            earlier_overlap = valid_overlap[valid_overlap < self.refresh_start_date]
+            if not earlier_overlap.empty:
+                valid_overlap = earlier_overlap
+            elif not valid_overlap.empty:
+                # Newly listed symbols may only have an anchor inside the window.
+                valid_overlap = valid_overlap[:1]
+        if valid_overlap.empty:
+            logger.warning(f"skip normalize extend {symbol_name}: no date with a valid close in old and new data")
+            return pd.DataFrame(columns=df.reset_index().columns)
+        latest_date = valid_overlap[-1]
         df = df.loc[latest_date:]
         if df.empty:
             logger.warning(f"skip normalize extend {symbol_name}: no data on or after old latest date {latest_date}")
             return pd.DataFrame(columns=df.reset_index().columns)
-        new_latest_data = df.iloc[0]
+        new_latest_data = df.loc[latest_date]
         old_latest_data = old_df.loc[latest_date]
         for col in self.column_list[:-1]:
             if col == "volume":
@@ -881,7 +908,11 @@ class Run(BaseRun):
         )
 
     def normalize_data_1d_extend(
-        self, old_qlib_data_dir, date_field_name: str = "date", symbol_field_name: str = "symbol"
+        self,
+        old_qlib_data_dir,
+        date_field_name: str = "date",
+        symbol_field_name: str = "symbol",
+        refresh_start_date=None,
     ):
         """normalize data extend; extending yahoo qlib data(from: https://github.com/microsoft/qlib/tree/main/scripts#download-cn-data)
 
@@ -913,6 +944,7 @@ class Run(BaseRun):
             $ python collector.py normalize_data_1d_extend --old_qlib_dir ~/.qlib/qlib_data/cn_data --source_dir ~/.qlib/stock_data/source --normalize_dir ~/.qlib/stock_data/normalize --region CN --interval 1d
         """
         _class = getattr(self._cur_module, f"{self.normalize_class_name}Extend")
+        # Re-emit existing dates from the requested download window for binary repair.
         yc = Normalize(
             source_dir=self.source_dir,
             target_dir=self.normalize_dir,
@@ -921,6 +953,7 @@ class Run(BaseRun):
             date_field_name=date_field_name,
             symbol_field_name=symbol_field_name,
             old_qlib_data_dir=old_qlib_data_dir,
+            refresh_start_date=refresh_start_date,
         )
         yc.normalize()
 
@@ -982,6 +1015,7 @@ class Run(BaseRun):
         delay: float = 0.1,
         stale_ratio: float = 0.001,
         exists_skip: bool = False,
+        szrankguard_source_dir: str = str(SZRANKGUARD_DEFAULT_SOURCE),
     ):
         """update yahoo data to bin
 
@@ -1004,6 +1038,10 @@ class Run(BaseRun):
             default 0.001 (0.1%).
         exists_skip: bool
             exists skip, by default False
+        szrankguard_source_dir: str
+            US universe source containing <symbol>_support.csv files; defaults to
+            /mnt/hdd/qlib_data/SZRankGuard_symbol_support. Missing or empty sources
+            are skipped with a warning, preserving any existing szrankguard.txt.
         Notes
         -----
             If the data in qlib_data_dir is incomplete, np.nan will be populated to trading_date for the previous trading day
@@ -1073,7 +1111,7 @@ class Run(BaseRun):
             else self.max_workers
         )
         # normalize data
-        self.normalize_data_1d_extend(qlib_data_1d_dir)
+        self.normalize_data_1d_extend(qlib_data_1d_dir, refresh_start_date=trading_date)
         # normalize precheck before dump (skip if raw precheck was skipped due to empty source dir)
         if raw_precheck_skipped_no_source:
             logger.info("skip normalized precheck: raw precheck was skipped because source csv dir was empty")
@@ -1108,6 +1146,32 @@ class Run(BaseRun):
                 output_name="tradable_us",
                 source_names=("all", "sp500", "nasdaq100", "djia", "sp400"),
             )
+            self.generate_szrankguard_instruments(qlib_data_1d_dir, szrankguard_source_dir)
+
+    @staticmethod
+    def generate_szrankguard_instruments(
+        qlib_data_1d_dir: str,
+        szrankguard_source_dir: str = str(SZRANKGUARD_DEFAULT_SOURCE),
+    ):
+        """Regenerate SZRankGuard from support filenames in the active data directory."""
+        source_dir = Path(szrankguard_source_dir).expanduser()
+        try:
+            symbols = read_szrankguard_symbols(source_dir)
+        except (NotADirectoryError, NoSupportFilesError) as exc:
+            logger.warning(f"skip SZRankGuard generation: {exc}; existing universe preserved")
+            return None
+
+        instruments_dir = Path(qlib_data_1d_dir).expanduser().resolve() / "instruments"
+        reference_symbols = read_reference_symbols(instruments_dir / "all.txt")
+        unmatched = [symbol for symbol in symbols if symbol not in reference_symbols]
+        output_path = instruments_dir / "szrankguard.txt"
+        write_szrankguard_universe(symbols, output_path, "1999-01-01", "2099-12-31")
+        logger.info(f"generated {output_path} from {source_dir}; symbols={len(symbols)}")
+        if unmatched:
+            logger.warning(f"SZRankGuard symbols absent from all.txt ({len(unmatched)}): {', '.join(unmatched)}")
+        else:
+            logger.info("SZRankGuard symbols absent from all.txt (0): none")
+        return output_path
 
     @staticmethod
     def generate_tradable_instruments(

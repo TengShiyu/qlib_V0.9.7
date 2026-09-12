@@ -171,6 +171,20 @@ class BaseCollector(abc.ABC):
         if instrument_path.exists():
             _old_df = pd.read_csv(instrument_path)
             df = pd.concat([_old_df, df], sort=False)
+
+        if "date" in df.columns:
+            date_key = pd.to_datetime(df["date"], errors="coerce", utc=True, format="mixed")
+            if self.interval.lower() == "1d":
+                date_key = date_key.dt.normalize()
+            df = df.assign(_qlib_date_key=date_key)
+            if "close" in df.columns:
+                df = df.assign(_qlib_valid_close=pd.to_numeric(df["close"], errors="coerce").notna())
+                df.sort_values(["_qlib_date_key", "_qlib_valid_close"], kind="stable", inplace=True)
+                df.drop(columns="_qlib_valid_close", inplace=True)
+            else:
+                df.sort_values("_qlib_date_key", kind="stable", inplace=True)
+            df.drop_duplicates("_qlib_date_key", keep="last", inplace=True)
+            df.drop(columns="_qlib_date_key", inplace=True)
         df.to_csv(instrument_path, index=False)
 
     def cache_small_data(self, symbol, df):
