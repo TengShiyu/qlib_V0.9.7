@@ -1056,11 +1056,16 @@ class Run(BaseRun):
             $ python collector.py update_data_to_bin --qlib_data_1d_dir <user data dir> --trading_date <start date> --end_date <end date>
         """
 
+        def start_step(name):
+            # Flush so banners precede module output even when stdout goes to a log.
+            print(f"\n==============================\nstart {name}\n==============================", flush=True)
+
         if self.interval.lower() != "1d":
             logger.warning(f"currently supports 1d data updates: --interval 1d")
         if stale_ratio < 0 or stale_ratio > 1:
             raise ValueError(f"stale_ratio should be within [0, 1], got {stale_ratio}")
 
+        start_step("Prepare the data directories")
         # download qlib 1d data
         qlib_data_1d_dir = str(Path(qlib_data_1d_dir).expanduser().resolve())
         metadata_dir = Path(qlib_data_1d_dir).joinpath("metadata")
@@ -1073,10 +1078,12 @@ class Run(BaseRun):
             self.normalize_dir.mkdir(parents=True, exist_ok=True)
 
         if not exists_qlib_data(qlib_data_1d_dir):
+            start_step("Download the initial Qlib dataset")
             GetData().qlib_data(
                 target_dir=qlib_data_1d_dir, interval=self.interval, region=self.region, exists_skip=exists_skip
             )
 
+        start_step("Determine the update window")
         # start/end date
         if trading_date is None:
             calendar_df = pd.read_csv(Path(qlib_data_1d_dir).joinpath("calendars/day.txt"))
@@ -1089,12 +1096,14 @@ class Run(BaseRun):
 
         # download data from yahoo only if source csv files are not complete/up-to-date
         # NOTE: when downloading data from YahooFinance, max_workers is recommended to be 1
+        start_step("Check existing raw CSVs")
         source_csv_paths = list(self.source_dir.glob("*.csv"))
         raw_precheck_skipped_no_source = False
         expected_files = None
         if not source_csv_paths:
             logger.info(f"skip precheck: no csv files found in {self.source_dir}, start downloading directly")
             raw_precheck_skipped_no_source = True
+            start_step("Download Yahoo data")
             self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
         else:
             expected_files = self._get_expected_symbol_csv_files()
@@ -1103,6 +1112,7 @@ class Run(BaseRun):
         ):
             logger.info(f"skip download: source csv files are already up-to-date for end_date={end_date}")
         elif not raw_precheck_skipped_no_source:
+            start_step("Download Yahoo data")
             self.download_data(delay=delay, start=trading_date, end=end_date, check_data_length=check_data_length)
         # NOTE: a larger max_workers setting here would be faster
         self.max_workers = (
@@ -1110,16 +1120,19 @@ class Run(BaseRun):
             if self.max_workers is None or self.max_workers <= 1
             else self.max_workers
         )
+        start_step("Normalize the data")
         # normalize data
         self.normalize_data_1d_extend(qlib_data_1d_dir, refresh_start_date=trading_date)
         # normalize precheck before dump (skip if raw precheck was skipped due to empty source dir)
         if raw_precheck_skipped_no_source:
             logger.info("skip normalized precheck: raw precheck was skipped because source csv dir was empty")
         else:
+            start_step("Check normalized CSVs")
             if expected_files is None:
                 expected_files = self._get_expected_symbol_csv_files()
             self._precheck_normalized_source(end_date=end_date, stale_ratio=stale_ratio, expected_files=expected_files)
 
+        start_step("Update Qlib binary data")
         # dump bin
         _dump = DumpDataUpdate(
             data_path=self.normalize_dir,
@@ -1134,18 +1147,22 @@ class Run(BaseRun):
         if _region not in ["cn", "us"]:
             logger.warning(f"Unsupported region: region={_region}, component downloads will be ignored")
             return
+        start_step("Refresh index universes")
         index_list = ["CSI100", "CSI300"] if _region == "cn" else ["SP500", "NASDAQ100", "DJIA", "SP400"]
         get_instruments = getattr(
             importlib.import_module(f"data_collector.{_region}_index.collector"), "get_instruments"
         )
         for _index in index_list:
+            start_step(f"Refresh {_index} universe")
             get_instruments(str(qlib_data_1d_dir), _index, market_index=f"{_region}_index")
         if _region == "us":
+            start_step("Regenerate tradable_us.txt")
             generate_merged_instruments(
                 qlib_data_path=qlib_data_1d_dir,
                 output_name="tradable_us",
                 source_names=("all", "sp500", "nasdaq100", "djia", "sp400"),
             )
+            start_step("Regenerate szrankguard.txt")
             self.generate_szrankguard_instruments(qlib_data_1d_dir, szrankguard_source_dir)
 
     @staticmethod
