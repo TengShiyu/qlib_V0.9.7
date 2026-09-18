@@ -83,6 +83,11 @@ class _QLibLoggerManager:
 get_module_logger = _QLibLoggerManager()
 
 
+def print_step_banner(name: str) -> None:
+    """Print a flushed step boundary for console output and redirected training logs."""
+    print(f"\n==============================\nstart {name}\n==============================", flush=True)
+
+
 class TimeInspector:
     timer_logger = get_module_logger("timer")
 

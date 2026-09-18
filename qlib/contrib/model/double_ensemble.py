@@ -9,7 +9,7 @@ from ...model.base import Model
 from ...data.dataset import DatasetH
 from ...data.dataset.handler import DataHandlerLP
 from ...model.interpret.base import FeatureInt
-from ...log import get_module_logger
+from ...log import get_module_logger, print_step_banner
 
 
 class DEnsembleModel(Model, FeatureInt):
@@ -63,6 +63,7 @@ class DEnsembleModel(Model, FeatureInt):
         self.early_stopping_rounds = early_stopping_rounds
 
     def fit(self, dataset: DatasetH):
+        print_step_banner("ML Double Ensemble prepare training and validation data")
         df_train, df_valid = dataset.prepare(
             ["train", "valid"], col_set=["feature", "label"], data_key=DataHandlerLP.DK_L
         )
@@ -78,14 +79,15 @@ class DEnsembleModel(Model, FeatureInt):
         # train sub-models
         for k in range(self.num_models):
             self.sub_features.append(features)
-            self.logger.info("Training sub-model: ({}/{})".format(k + 1, self.num_models))
+            print_step_banner(f"ML Double Ensemble fit submodel {k + 1}/{self.num_models}")
+            print(f"Training rows: {N}; validation rows: {len(df_valid)}; features: {len(features)}", flush=True)
             model_k = self.train_submodel(df_train, df_valid, weights, features)
             self.ensemble.append(model_k)
             # no further sample re-weight and feature selection needed for the last sub-model
             if k + 1 == self.num_models:
                 break
 
-            self.logger.info("Retrieving loss curve and loss values...")
+            print_step_banner(f"ML Double Ensemble compute losses after submodel {k + 1}/{self.num_models}")
             loss_curve = self.retrieve_loss_curve(model_k, df_train, features)
             pred_k = self.predict_sub(model_k, df_train, features)
             pred_sub.iloc[:, k] = pred_k
@@ -95,11 +97,11 @@ class DEnsembleModel(Model, FeatureInt):
             loss_values = pd.Series(self.get_loss(y_train.values.squeeze(), pred_ensemble.values))
 
             if self.enable_sr:
-                self.logger.info("Sample re-weighting...")
+                print_step_banner(f"ML Double Ensemble sample reweighting for submodel {k + 2}/{self.num_models}")
                 weights = self.sample_reweight(loss_curve, loss_values, k + 1)
 
             if self.enable_fs:
-                self.logger.info("Feature selection...")
+                print_step_banner(f"ML Double Ensemble feature selection for submodel {k + 2}/{self.num_models}")
                 features = self.feature_selection(df_train, loss_values)
 
     def train_submodel(self, df_train, df_valid, weights, features):
