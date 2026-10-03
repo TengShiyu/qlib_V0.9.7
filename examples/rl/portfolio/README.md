@@ -52,9 +52,15 @@ The first milestone is simulator correctness, not profitability.
 
 - The agent observes information available after close `t` and selects an
   action.
-- The feasible target portfolio is executed at close `t + 1`.
-- The resulting portfolio is held from close `t + 1` through close `t + 3`.
-- The next action is selected two trading sessions after the previous action.
+- Target share quantities are frozen using close `t` prices and known trading
+  availability. Fills occur at close `t + 1`, subject to execution availability,
+  fees, and cash. Unfilled orders do not change the earlier action or targets.
+- The next action is selected at close `t + 2`, using holdings and returns marked
+  only through `t + 2`. It is executed at `t + 3`.
+- A training transition measures account return from decision close `t` to the
+  next decision close `t + 2`, including both the pre-fill and post-fill price
+  moves. The supervised ML label remains `close[t+3] / close[t+1] - 1`; that
+  future label is not part of the policy observation or next account state.
 - Calendar-day offsets must never be used as a substitute for trading-session
   offsets.
 
@@ -77,7 +83,7 @@ weight to every stock. The initial action vocabulary is:
 
 | ID | Command | Target behavior |
 |---:|---|---|
-| 0 | Hold | Keep current weights, subject to forced non-tradable handling |
+| 0 | Hold | Keep existing quantities; weights drift with market prices |
 | 1 | Cash | Move tradable positions to cash |
 | 2 | Equal weight | Equal-weight eligible positive-score stocks |
 | 3 | Conservative score | Score-weight eligible stocks with a lower equity budget |
@@ -104,6 +110,54 @@ defensive_equity: 0.50
 
 The action vocabulary is configuration-backed and must remain stable within a
 trained model version. Changing its meaning invalidates existing checkpoints.
+
+The shared DQN policy applies `no_empty_rotation_v1`: when total stock weight
+is at most `1e-8`, action 10 (rotate worst to best) is unavailable. All other
+actions, including HOLD and CASH, remain available. The same mask applies to
+greedy inference, training exploration, and Double-DQN next-state targets.
+It does not force a purchase or prevent rotation when holdings exist.
+New checkpoints record `action_mask_version`. Existing `decision_close_v2`
+checkpoints without this field still load and apply the mask, without changing
+their network weights or input dimensions. Their behavior may change; retrain
+and evaluate to measure performance under the new selection rule.
+
+### Decision timing compatibility
+
+Live inference, rolling-policy activation, and the Qlib strategy share
+`qlib.rl.portfolio.scheduling`. Decisions follow the route's anchored session
+interval; late availability filters dates without shifting that phase.
+Execution is the next known exchange session, which may lie beyond a route's
+final decision date. The strategy verifies the execution session against this
+shared calendar rule before invoking the policy.
+
+The strategy and live generator also share `qlib.rl.portfolio.orders`: requested
+quantities follow Qlib lot rounding, sells precede buys, and decision-close cash
+estimates reserve proportional and minimum commissions. Orders that exceed this
+estimated budget are reduced before submission. These estimates assume preceding
+sells fill; the executor still enforces actual cash and prices. Nonzero impact
+cost is currently unsupported by this requested-order planner. The lightweight
+training simulator supports fractional shares, so lot-constrained requests and
+fills can differ from its transitions.
+
+Checkpoints now contain `decision_timing_version: decision_close_v2` and a
+`state_dict`. Older weights-only checkpoints are rejected with a retraining
+message: their observation/accounting rules used execution-session information.
+Changing only the checkpoint metadata does not make an old policy compatible.
+Retrain it and rerun evaluation with the corrected simulator.
+
+Portfolio marks carry the last known price across missing observations. The
+chronological simulator requires `missing_return_value: 0`; it does not invent
+price changes for missing observations. Market benchmark returns use the same
+decision-to-decision boundaries as the portfolio accounting. Qlib execution
+may additionally apply lot-size/volume/limit rules, so simulator and backtest
+fills are not guaranteed identical.
+
+Regression tests alter future prices and trading availability while checking
+that earlier observations, targets, and requested quantities are unchanged.
+They also cover partial fills, fees, the two-session account-state clock, and
+the rolling ML label cutoff. Historical universe membership and vendor data
+revisions still require point-in-time data; this timing fix does not establish
+that the external dataset is free of survivorship or revision bias.
 
 ### Portfolio constraints
 

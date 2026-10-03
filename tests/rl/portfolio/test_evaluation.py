@@ -15,7 +15,7 @@ from tests.rl.portfolio.test_integration import make_data
 class PortfolioEvaluationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.data = make_data(np.array([[0.01, 0.02], [-0.02, 0.01], [0.03, -0.01]]))
-        dates = self.data.execution_dates.union(self.data.reward_end_dates)
+        dates = self.data.decision_dates.union(self.data.reward_end_dates)
         self.market_close = pd.Series([100.0, 102.0, 101.0, 103.0], index=dates)
 
     def test_result_diagnostics_reports_action_and_exposure(self) -> None:

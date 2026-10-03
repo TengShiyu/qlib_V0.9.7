@@ -17,12 +17,14 @@ import torch
 from tianshou.data import Batch, ReplayBuffer
 from tianshou.data.collector import Collector
 
+from qlib.log import print_step_banner
+
 from .action import PortfolioActionConfig
 from .benchmark import BenchmarkResult, calculate_metrics
 from .data import PortfolioDataSplit
 from .integration import make_portfolio_env
-from .policy import PortfolioDQNConfig, PortfolioDQNPolicy, make_dqn_policy
-from .simulator import PortfolioSimulatorConfig
+from .policy import ACTION_MASK_VERSION, PortfolioDQNConfig, PortfolioDQNPolicy, make_dqn_policy
+from .simulator import DECISION_TIMING_VERSION, PortfolioSimulatorConfig
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,7 @@ def train_dqn(
 ) -> PortfolioDQNTrainingResult:
     """Train on one chronological split and select by penalized validation reward."""
 
+    print_step_banner("RL DQN initialize policy, replay buffer, and collector")
     set_global_seed(dqn_config.random_seed)
     policy = make_dqn_policy(dqn_config)
     replay_buffer = ReplayBuffer(dqn_config.replay_buffer_size)
@@ -58,17 +61,20 @@ def train_dqn(
     best_state = copy.deepcopy(policy.state_dict())
     records = []
     for epoch in range(1, dqn_config.epochs + 1):
+        print_step_banner(f"RL DQN epoch {epoch}/{dqn_config.epochs} collect training episodes")
         epsilon = dqn_config.epsilon(epoch - 1)
         policy.set_eps(epsilon)
         policy.train()
         collection = collector.collect(n_episode=dqn_config.episodes_per_epoch)
         losses = []
         gradient_norms = []
+        print_step_banner(f"RL DQN epoch {epoch}/{dqn_config.epochs} gradient updates")
         for _ in range(dqn_config.updates_per_epoch):
             update = policy.update(dqn_config.batch_size, replay_buffer)
             losses.append(float(update["loss"]))
             gradient_norms.append(float(update["gradient_norm"]))
 
+        print_step_banner(f"RL DQN epoch {epoch}/{dqn_config.epochs} validation")
         validation = evaluate_dqn(
             policy,
             valid_data,
@@ -95,7 +101,16 @@ def train_dqn(
                 "validation_sharpe_ratio": validation.metrics["sharpe_ratio"],
             }
         )
+        print(
+            f"RL DQN epoch {epoch}/{dqn_config.epochs} finished: "
+            f"epsilon={epsilon:.6g}, collected_steps={int(collection['n/st'])}, "
+            f"mean_loss={records[-1]['mean_loss']:.6g}, "
+            f"validation_total_return={validation_return:.6g}, "
+            f"validation_learning_return={validation_learning_return:.6g}, best_epoch={best_epoch}",
+            flush=True,
+        )
 
+    print_step_banner(f"RL DQN restore best policy from epoch {best_epoch} and validate")
     policy.load_state_dict(best_state)
     selected_validation = evaluate_dqn(
         policy,
@@ -176,11 +191,12 @@ def evaluate_dqn(
 
 
 def save_dqn_checkpoint(policy: PortfolioDQNPolicy, path: Union[str, Path]) -> Path:
-    """Save model and target-network weights outside Git."""
+    """Save weights and the observation/accounting timing contract outside Git."""
 
     checkpoint_path = Path(path).expanduser()
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(policy.state_dict(), checkpoint_path)
+    torch.save({"decision_timing_version": DECISION_TIMING_VERSION,
+                "action_mask_version": ACTION_MASK_VERSION, "state_dict": policy.state_dict()}, checkpoint_path)
     return checkpoint_path
 
 
@@ -188,9 +204,17 @@ def load_dqn_checkpoint(path: Union[str, Path], config: PortfolioDQNConfig) -> P
     """Build a fresh policy and load a trusted weights-only checkpoint."""
 
     checkpoint_path = Path(path).expanduser()
-    policy = make_dqn_policy(config)
     state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    policy.load_state_dict(state)
+    if not isinstance(state, dict) or state.get("decision_timing_version") != DECISION_TIMING_VERSION:
+        raise ValueError(
+            "RL checkpoint uses obsolete decision timing. Retrain the policy with "
+            "decision-time observations before evaluation or serving."
+        )
+    if state.get("action_mask_version") not in (None, ACTION_MASK_VERSION):
+        raise ValueError("RL checkpoint uses an unsupported action mask version.")
+    # Legacy decision_close_v2 weights retain their shape and use today's mask.
+    policy = make_dqn_policy(config)
+    policy.load_state_dict(state["state_dict"])
     return policy
 
 

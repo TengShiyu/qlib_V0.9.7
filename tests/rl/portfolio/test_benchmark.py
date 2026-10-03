@@ -41,12 +41,12 @@ class PortfolioBenchmarkTest(unittest.TestCase):
 
     def test_market_benchmark_uses_matching_transition_boundaries(self) -> None:
         data = make_data(np.zeros((2, 2)))
-        dates = data.execution_dates.union(data.reward_end_dates)
+        dates = data.decision_dates.union(data.reward_end_dates)
         market_close = pd.Series(np.arange(100.0, 100.0 + len(dates)), index=dates)
         result = run_required_benchmarks(data, market_close=market_close)["market"]
         expected = (
             market_close.reindex(data.reward_end_dates).to_numpy()
-            / market_close.reindex(data.execution_dates).to_numpy()
+            / market_close.reindex(data.decision_dates).to_numpy()
             - 1.0
         )
 

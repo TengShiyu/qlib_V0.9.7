@@ -2,9 +2,12 @@
 # Licensed under the MIT License.
 
 import abc
+import os
 import shutil
 import traceback
+from copy import copy
 from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Iterable, List, Union
 from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExecutor
@@ -492,42 +495,63 @@ class DumpDataUpdate(DumpDataBase):
     def _dump_instruments(self):
         pass
 
-    def _overwrite_existing_bin_values(self, df: pd.DataFrame):
-        """Replace finite values for dates already present in existing feature bins."""
-        if df.empty:
+    @staticmethod
+    def _write_bin_atomically(bin_path, values):
+        """Keep the previous complete feature file if a local write fails."""
+        temporary = None
+        try:
+            with NamedTemporaryFile(dir=bin_path.parent, prefix=f".{bin_path.name}.", delete=False) as stream:
+                temporary = Path(stream.name)
+                values.astype("<f4").tofile(stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if bin_path.exists():
+                shutil.copymode(bin_path, temporary)
+            temporary.replace(bin_path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _data_to_bin(self, df, calendar_list, features_dir):
+        """Upsert by global session index so interrupted updates can be retried.
+
+        Some workers may finish before another fails. Metadata then remains old,
+        so append-only writes would duplicate those workers' rows on a retry.
+        Finite historical corrections replace old values; missing source values
+        never erase existing observations. New gaps remain NaN.
+        """
+        frame = self.data_merge_calendar(df.copy(), calendar_list)
+        if frame.empty:
             return
-
-        code = fname_to_code(str(df.iloc[0][self.symbol_field_name]).lower())
-        frame = df.drop_duplicates(self.date_field_name).copy()
-        frame[self.date_field_name] = pd.to_datetime(frame[self.date_field_name])
-        calendar_index = {date: index for index, date in enumerate(self._old_calendar_list)}
-        positions = frame[self.date_field_name].map(calendar_index).fillna(-1).astype(int).to_numpy()
-        features_dir = self._features_dir.joinpath(code_to_fname(code).lower())
-
+        positions = pd.Index(calendar_list).get_indexer(frame.index)
+        first, last = int(positions[0]), int(positions[-1])
         for field in self.get_dump_fields(frame.columns):
-            bin_path = features_dir.joinpath(f"{field.lower()}.{self.freq}{self.DUMP_FILE_SUFFIX}")
-            if field not in frame.columns or not bin_path.exists():
+            if field not in frame.columns:
                 continue
-
-            bin_data = np.fromfile(bin_path, dtype="<f4")
-            if len(bin_data) < 2:
-                continue
-            start_index = int(bin_data[0])
-            offsets = positions - start_index
-            field_values = pd.to_numeric(frame[field], errors="coerce").to_numpy(dtype="<f4")
-            valid = np.isfinite(field_values) & (offsets >= 0) & (offsets < len(bin_data) - 1)
-            if not valid.any():
-                continue
-
-            bin_data[1 + offsets[valid]] = field_values[valid]
-            temp_path = bin_path.with_name(f"{bin_path.name}.tmp")
-            bin_data.astype("<f4").tofile(temp_path)
-            temp_path.replace(bin_path)
-
-    def _dump_bin_update(self, df: pd.DataFrame, update_calendars: List[pd.Timestamp]):
-        self._overwrite_existing_bin_values(df)
-        if update_calendars:
-            self._dump_bin(df, update_calendars)
+            bin_path = features_dir / f"{field.lower()}.{self.freq}{self.DUMP_FILE_SUFFIX}"
+            values = pd.to_numeric(frame[field], errors="raise").to_numpy(dtype="<f4")
+            old = np.empty(0, dtype="<f4")
+            old_start = first
+            if bin_path.exists():
+                raw = np.fromfile(bin_path, dtype="<f4")
+                if (bin_path.stat().st_size % 4 or not len(raw) or not np.isfinite(raw[0])
+                        or raw[0] < 0 or raw[0] != int(raw[0])):
+                    raise ValueError(f"Invalid feature binary: {bin_path}")
+                old_start, old = int(raw[0]), raw[1:]
+                # A previous failed run may have written an uncommitted tail.
+                # Rebuild it from this run's source/calendar: new calendar dates
+                # can differ between attempts, so those old offsets are unsafe.
+                old = old[:max(0, len(self._old_calendar_list) - old_start)]
+                if not len(old):
+                    old_start = first
+            start = min(first, old_start)
+            end = max(last, old_start + len(old) - 1)
+            result = np.full(end - start + 2, np.nan, dtype="<f4")
+            result[0] = start
+            result[1 + old_start - start:1 + old_start - start + len(old)] = old
+            finite = np.isfinite(values)
+            result[1 + positions[finite] - start] = values[finite]
+            self._write_bin_atomically(bin_path, result)
 
     def _dump_features(self):
         logger.info("start dump features......")
@@ -540,23 +564,14 @@ class DumpDataUpdate(DumpDataBase):
                 if not (isinstance(_start, pd.Timestamp) and isinstance(_end, pd.Timestamp)):
                     continue
                 if _code in self._update_instruments:
-                    # exists stock, will append data
-                    _update_calendars = (
-                        _df[_df[self.date_field_name] > self._update_instruments[_code][self.INSTRUMENTS_END_FIELD]][
-                            self.date_field_name
-                        ]
-                        .sort_values()
-                        .to_list()
-                    )
-                    if _update_calendars:
+                    if _end > pd.Timestamp(self._update_instruments[_code][self.INSTRUMENTS_END_FIELD]):
                         self._update_instruments[_code][self.INSTRUMENTS_END_FIELD] = self._format_datetime(_end)
-                    futures[executor.submit(self._dump_bin_update, _df, _update_calendars)] = _code
                 else:
                     # new stock
                     _dt_range = self._update_instruments.setdefault(_code, dict())
                     _dt_range[self.INSTRUMENTS_START_FIELD] = self._format_datetime(_start)
                     _dt_range[self.INSTRUMENTS_END_FIELD] = self._format_datetime(_end)
-                    futures[executor.submit(self._dump_bin, _df, self._new_calendar_list)] = _code
+                futures[executor.submit(self._dump_bin, _df, self._new_calendar_list)] = _code
 
             with tqdm(total=len(futures)) as p_bar:
                 for _future in as_completed(futures):
@@ -565,16 +580,36 @@ class DumpDataUpdate(DumpDataBase):
                     except Exception:
                         error_code[futures[_future]] = traceback.format_exc()
                     p_bar.update()
-            logger.info(f"dump bin errors: {error_code}")
+        if error_code:
+            logger.error(f"dump bin errors: {error_code}")
+            raise RuntimeError(
+                f"Binary feature update failed for {len(error_code)} instrument(s): "
+                f"{', '.join(sorted(error_code))}. Calendar and instrument metadata were not published. "
+                "Fix the local write error and retry the update."
+            )
 
         logger.info("end of features dump.\n")
 
     def dump(self):
-        self.save_calendars(self._new_calendar_list)
         self._dump_features()
         df = pd.DataFrame.from_dict(self._update_instruments, orient="index")
         df.index.names = [self.symbol_field_name]
-        self.save_instruments(df.reset_index())
+        # Stage both metadata files only after every feature worker succeeds.
+        # Publish the calendar last: the daily updater uses it as its watermark.
+        with TemporaryDirectory(prefix=".dump-update-", dir=self.qlib_dir) as temporary:
+            staged = copy(self)
+            staged._calendars_dir = Path(temporary) / self.CALENDARS_DIR_NAME
+            staged._instruments_dir = Path(temporary) / self.INSTRUMENTS_DIR_NAME
+            staged.save_calendars(self._new_calendar_list)
+            staged.save_instruments(df.reset_index())
+            for source, target in (
+                (staged._instruments_dir / self.INSTRUMENTS_FILE_NAME,
+                 self._instruments_dir / self.INSTRUMENTS_FILE_NAME),
+                (staged._calendars_dir / f"{self.freq}.txt", self._calendars_dir / f"{self.freq}.txt"),
+            ):
+                if target.exists():
+                    shutil.copymode(target, source)
+                source.replace(target)
 
 
 if __name__ == "__main__":

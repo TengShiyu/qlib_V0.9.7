@@ -26,6 +26,9 @@ from qlib.rl.portfolio import (
     load_dqn_checkpoint,
 )
 from qlib.rl.portfolio.interpreter import build_portfolio_observation
+from qlib.rl.portfolio.sizing import size_target_amounts
+from qlib.rl.portfolio.orders import plan_requested_orders
+from qlib.rl.portfolio.scheduling import scheduled_decision_dates, next_execution_session
 
 
 DEFAULT_CHECKPOINT = Path("portfolio_dqn_rl/training/best_policy.pt")
@@ -65,9 +68,7 @@ def resolve_portfolio_dqn_checkpoint(
 
     root = Path(experiment_root).expanduser().resolve()
     resolved = (
-        Path(checkpoint_path).expanduser().resolve()
-        if checkpoint_path is not None
-        else root / DEFAULT_CHECKPOINT
+        Path(checkpoint_path).expanduser().resolve() if checkpoint_path is not None else root / DEFAULT_CHECKPOINT
     )
     if not resolved.is_file():
         raise FileNotFoundError(f"Portfolio DQN checkpoint does not exist: {resolved}")
@@ -144,9 +145,7 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
             trading_interval=self.trading_interval,
         )
         self._decision_routes = {
-            decision_date: route
-            for route in self.policy_routes
-            for decision_date in route.decision_dates
+            decision_date: route for route in self.policy_routes for decision_date in route.decision_dates
         }
         self.policy = None
         self._reset_episode_state()
@@ -163,6 +162,9 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
         route = self._decision_routes.get(pd.Timestamp(pred_start_time).normalize())
         if route is None:
             return self._make_trade_decision([], trade_start_time, trade_end_time)
+        execution_date = next_execution_session(self.trade_calendar._calendar, pred_start_time)
+        if execution_date != pd.Timestamp(trade_start_time).normalize():
+            raise ValueError("Backtest execution session does not match the shared decision schedule.")
         self._activate_window(route)
         pred_score = self.signal.get_signal(start_time=pred_start_time, end_time=pred_end_time)
         if pred_score is None:
@@ -179,8 +181,8 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
 
         current_weights, cash_weight, portfolio_value = self._current_weights(
             instruments,
-            trade_start_time,
-            trade_end_time,
+            pred_start_time,
+            pred_end_time,
         )
         self._record_completed_holding_return(portfolio_value)
         scores = scores_by_instrument.reindex(instruments).to_numpy(dtype=np.float64)
@@ -189,8 +191,8 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
             [
                 self.trade_exchange.is_stock_tradable(
                     stock_id=instrument,
-                    start_time=trade_start_time,
-                    end_time=trade_end_time,
+                    start_time=pred_start_time,
+                    end_time=pred_end_time,
                 )
                 for instrument in instruments
             ],
@@ -219,7 +221,9 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
             config=self.action_config,
         )
         turnover = calculate_turnover(current_weights, target.asset_weights)
-        self._last_turnover = turnover.total
+        # The next observation measures return since this decision, including
+        # the intervening execution. Do not reset its baseline after filling.
+        self._last_decision_value = portfolio_value
         self.last_observation = observation.copy()
         self.last_action = action
         self.action_history.append((pd.Timestamp(pred_start_time), pd.Timestamp(trade_start_time), action))
@@ -251,15 +255,16 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
             instruments,
             target.asset_weights,
             portfolio_value,
-            trade_start_time,
-            trade_end_time,
+            pred_start_time,
+            pred_end_time,
+            tradable,
         )
-        order_list = self.trade_exchange.generate_order_for_target_amount_position(
-            target_position=target_amounts,
-            current_position=current_amounts,
-            start_time=trade_start_time,
-            end_time=trade_end_time,
+        plan = plan_requested_orders(
+            self.trade_exchange, target_amounts, current_amounts,
+            self.trade_position.get_cash(include_settle=True),
+            pred_start_time, pred_end_time, trade_start_time, trade_end_time,
         )
+        order_list = plan.orders
         self._decision_audit[-1]["requested_order_count"] = len(order_list)
         return self._make_trade_decision(order_list, trade_start_time, trade_end_time)
 
@@ -298,7 +303,7 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
         self._reset_episode_state()
 
     def post_exe_step(self, execute_result=None) -> None:
-        """Record portfolio value immediately after a scheduled rebalance."""
+        """Record fills and realized turnover after a scheduled rebalance."""
 
         if self._decision_pending:
             executions = execute_result or []
@@ -332,7 +337,7 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
             audit["executed_sell_count"] = sells
             audit["executed_trade_value"] = trade_value
             audit["transaction_cost"] = transaction_cost
-            self._last_decision_value = float(self.trade_position.calculate_value())
+            self._last_turnover = trade_value / self._last_decision_value
             self._decision_pending = False
 
     def post_upper_level_exe_step(self) -> None:
@@ -422,23 +427,29 @@ class PortfolioDQNStrategy(BaseSignalStrategy):
         portfolio_value: float,
         trade_start_time: pd.Timestamp,
         trade_end_time: pd.Timestamp,
+        tradable: np.ndarray,
     ) -> dict[str, float]:
-        cost_buffer = 1.0 + max(float(self.trade_exchange.open_cost), float(self.trade_exchange.close_cost))
-        investable_value = portfolio_value / cost_buffer
-        target_amounts: dict[str, float] = {}
-        for instrument, weight in zip(instruments, target_weights):
-            if weight <= 0.0:
-                continue
-            price = self.trade_exchange.get_deal_price(
-                stock_id=instrument,
-                start_time=trade_start_time,
-                end_time=trade_end_time,
-                direction=OrderDir.BUY,
-            )
-            if price is None or not np.isfinite(price) or price <= 0.0:
-                continue
-            target_amounts[instrument] = investable_value * float(weight) / float(price)
-        return target_amounts
+        current = self.trade_position.get_stock_amount_dict()
+        prices = np.asarray(
+            [
+                self.trade_exchange.get_close(
+                    stock_id=instrument,
+                    start_time=trade_start_time,
+                    end_time=trade_end_time,
+                )
+                for instrument in instruments
+            ],
+            dtype=np.float64,
+        )
+        amounts = size_target_amounts(
+            [current.get(instrument, 0.0) for instrument in instruments],
+            target_weights,
+            portfolio_value,
+            prices,
+            tradable,
+            max(float(self.trade_exchange.open_cost), float(self.trade_exchange.close_cost)),
+        )
+        return dict(zip(instruments, amounts))
 
 
 def _write_csv_atomically(frame: pd.DataFrame, path: Path) -> None:
@@ -457,9 +468,7 @@ def load_rolling_policy_routes(
     windows_path = rolling_dir / "rolling_windows.csv"
     history_path = rolling_dir / "checkpoint_history.csv"
     if not windows_path.is_file() or not history_path.is_file():
-        raise FileNotFoundError(
-            "Rolling DQN execution requires rolling_windows.csv and checkpoint_history.csv."
-        )
+        raise FileNotFoundError("Rolling DQN execution requires rolling_windows.csv and checkpoint_history.csv.")
     windows = pd.read_csv(windows_path)
     history = pd.read_csv(history_path)
     required_windows = {"window_id", "test_start", "test_end"}
@@ -468,9 +477,12 @@ def load_rolling_policy_routes(
         raise ValueError("Rolling DQN audit files are missing required schedule columns.")
     if windows["window_id"].duplicated().any() or history["window_id"].duplicated().any():
         raise ValueError("Rolling DQN audit files contain duplicate window IDs.")
-    schedule = windows[list(required_windows)].merge(
-        history[list(required_history)], on="window_id", how="left", validate="one_to_one"
-    ).sort_values("window_id")
+    window_columns = list(required_windows) + (["available_as_of"] if "available_as_of" in windows else [])
+    schedule = (
+        windows[window_columns]
+        .merge(history[list(required_history)], on="window_id", how="left", validate="one_to_one")
+        .sort_values("window_id")
+    )
     if schedule["checkpoint_path"].isna().any() or len(schedule) != len(windows):
         raise ValueError("Every rolling test window must have one completed checkpoint.")
 
@@ -487,10 +499,11 @@ def load_rolling_policy_routes(
             checkpoint_path = (root / checkpoint_path).resolve()
         if not checkpoint_path.is_file():
             raise FileNotFoundError(f"Rolling DQN checkpoint does not exist: {checkpoint_path}")
-        test_calendar = pd.DatetimeIndex(
-            get_calendar(start_time=test_start, end_time=test_end, freq="day")
-        ).normalize()
-        decision_dates = frozenset(test_calendar[::trading_interval])
+        test_calendar = pd.DatetimeIndex(get_calendar(start_time=test_start, end_time=test_end, freq="day")).normalize()
+        decision_dates = frozenset(scheduled_decision_dates(
+            test_calendar, test_start, test_end, trading_interval,
+            available_as_of=getattr(row, "available_as_of", None),
+        ))
         routes.append(
             RollingPolicyRoute(
                 window_id=int(row.window_id),

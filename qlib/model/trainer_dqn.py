@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 from qlib.config import C
 from qlib.data.dataset import Dataset
 from qlib.data.dataset.weight import Reweighter
-from qlib.log import get_module_logger
+from qlib.log import get_module_logger, print_step_banner
 from qlib.model.base import Model
 from qlib.utils import (
     auto_filter_kwargs,
@@ -41,12 +41,15 @@ def _log_task_info(task_config: dict):
 
 def _exe_task(task_config: dict):
     rec = R.get_recorder()
+    print_step_banner(f"ML initialize model and dataset (recorder {rec.info['id']})")
     # model & dataset initialization
     model: Model = init_instance_by_config(task_config["model"], accept_types=Model)
     dataset: Dataset = init_instance_by_config(task_config["dataset"], accept_types=Dataset)
     reweighter: Reweighter = task_config.get("reweighter", None)
     # model training
+    print_step_banner(f"ML fit {type(model).__name__} (recorder {rec.info['id']})")
     auto_filter_kwargs(model.fit)(dataset, reweighter=reweighter)
+    print_step_banner(f"ML save model and dataset (recorder {rec.info['id']})")
     R.save_objects(**{"params.pkl": model})
     # this dataset is saved for online inference. So the concrete data should not be dumped
     dataset.config(dump_all=False, recursive=True)
@@ -68,6 +71,7 @@ def _exe_task(task_config: dict):
             default_module="qlib.workflow.record_temp",
             try_kwargs={"model": model, "dataset": dataset},
         )
+        print_step_banner(f"ML generate {type(r).__name__} (recorder {rec.info['id']})")
         r.generate()
 
 
@@ -258,13 +262,17 @@ class TrainerR(Trainer):
         if isinstance(tasks, dict):
             tasks = [tasks]
         if len(tasks) == 0:
+            print_step_banner("ML no training needed")
+            name = self.experiment_name if experiment_name is None else experiment_name
+            print(f"No new training tasks for experiment {name}.", flush=True)
             return []
         if train_func is None:
             train_func = self.train_func
         if experiment_name is None:
             experiment_name = self.experiment_name
         recs = []
-        for task in tqdm(tasks, desc="train tasks"):
+        for task_index, task in enumerate(tqdm(tasks, desc="train tasks"), start=1):
+            print_step_banner(f"ML training task {task_index}/{len(tasks)} (experiment {experiment_name})")
             if self._call_in_subproc:
                 get_module_logger("TrainerR").info("running models in sub process (for forcing release memroy).")
                 train_func = call_in_subproc(train_func, C)

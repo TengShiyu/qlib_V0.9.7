@@ -46,12 +46,12 @@ class PortfolioDataTest(unittest.TestCase):
         self.assertEqual(data.instruments, ("AAA", "BBB"))
         self.assertEqual(data.decision_dates.tolist(), self.calendar[[0, 2, 4, 6]].tolist())
         self.assertEqual(data.execution_dates.tolist(), self.calendar[[1, 3, 5, 7]].tolist())
-        self.assertEqual(data.reward_end_dates.tolist(), self.calendar[[3, 5, 7, 9]].tolist())
+        self.assertEqual(data.reward_end_dates.tolist(), self.calendar[[2, 4, 6, 8]].tolist())
 
     def test_returns_use_execution_close_through_reward_end_close(self) -> None:
         data = self.build()
 
-        expected_aaa = self.market.loc[(self.calendar[3], "AAA"), "close"]
+        expected_aaa = self.market.loc[(self.calendar[2], "AAA"), "close"]
         expected_aaa /= self.market.loc[(self.calendar[1], "AAA"), "close"]
         self.assertAlmostEqual(data.asset_returns[0, 0], expected_aaa - 1.0)
 
@@ -88,8 +88,8 @@ class PortfolioDataTest(unittest.TestCase):
         self.assertEqual(len(data.decision_dates), 2)
 
     def test_short_split_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "at least four trading dates"):
-            self.build(start="2025-01-01", end="2025-01-03")
+        with self.assertRaisesRegex(ValueError, "at least three trading dates"):
+            self.build(start="2025-01-01", end="2025-01-02")
 
     def test_duplicate_market_key_is_rejected(self) -> None:
         self.market = pd.concat([self.market, self.market.iloc[[0]]])
