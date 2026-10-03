@@ -35,7 +35,11 @@ class PortfolioDataSplit:
 
     Array shapes are ``(decision_count, instrument_count)``. Scores and
     volatility belong to decision date ``t``. Execution fields belong to
-    ``t+1``. Asset returns cover close ``t+1`` through close ``t+3``.
+    ``t+1``. A simulator transition ends at the next decision close ``t+2``;
+    its account reward includes existing holdings before execution as well as
+    new holdings afterwards. ``asset_returns`` describes only the post-fill
+    price leg ``t+1`` to ``t+2``; it is never a policy input. The supervised ML
+    label may still cover ``t+1`` through ``t+3``.
     """
 
     instruments: Tuple[str, ...]
@@ -46,6 +50,7 @@ class PortfolioDataSplit:
     volatility: np.ndarray
     observation_tradable: np.ndarray
     execution_tradable: np.ndarray
+    decision_close: np.ndarray
     execution_close: np.ndarray
     reward_end_close: np.ndarray
     asset_returns: np.ndarray
@@ -65,6 +70,7 @@ class PortfolioDataSplit:
             "volatility": self.volatility,
             "observation_tradable": self.observation_tradable,
             "execution_tradable": self.execution_tradable,
+            "decision_close": self.decision_close,
             "execution_close": self.execution_close,
             "reward_end_close": self.reward_end_close,
             "asset_returns": self.asset_returns,
@@ -81,6 +87,8 @@ class PortfolioDataSplit:
             raise ValueError("Every execution date must be after its decision date.")
         if not np.all(self.execution_dates < self.reward_end_dates):
             raise ValueError("Every reward-end date must be after its execution date.")
+        if not np.array_equal(self.reward_end_dates[:-1], self.decision_dates[1:]):
+            raise ValueError("Each transition must end at the next decision date.")
 
 
 def load_prediction_frame(
@@ -158,13 +166,13 @@ def build_portfolio_data_split(
         raise ValueError("calendar must contain at least one trading date.")
 
     split_calendar = trading_calendar[(trading_calendar >= date_range.start) & (trading_calendar <= date_range.end)]
-    if len(split_calendar) < 4:
-        raise ValueError("A split needs at least four trading dates for one complete transition.")
+    if len(split_calendar) < 3:
+        raise ValueError("A split needs at least three trading dates for one complete transition.")
 
-    decision_offsets = np.arange(0, len(split_calendar) - 3, 2, dtype=np.int64)
+    decision_offsets = np.arange(0, len(split_calendar) - 2, 2, dtype=np.int64)
     decision_dates = split_calendar[decision_offsets]
     execution_dates = split_calendar[decision_offsets + 1]
-    reward_end_dates = split_calendar[decision_offsets + 3]
+    reward_end_dates = split_calendar[decision_offsets + 2]
 
     scores = _pivot(normalized_predictions, "score", decision_dates, stable_instruments)
     close = _pivot(normalized_market, "close", trading_calendar, stable_instruments)
@@ -205,6 +213,9 @@ def build_portfolio_data_split(
         volatility=volatility,
         observation_tradable=observation_tradable,
         execution_tradable=execution_tradable,
+        # Carry only past prices for valuation of suspended holdings; eligibility
+        # above uses the unfilled decision-day price and volume.
+        decision_close=close_frame.where(close_frame > 0.0).ffill().to_numpy()[decision_positions],
         execution_close=execution_close,
         reward_end_close=reward_end_close,
         asset_returns=asset_returns,

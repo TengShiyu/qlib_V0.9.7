@@ -10,11 +10,23 @@ from typing import Any, Dict, Optional, Sequence, Union
 
 import numpy as np
 import torch
-from tianshou.data import Batch, to_torch_as
+from tianshou.data import Batch, to_numpy, to_torch_as
 from tianshou.policy import DQNPolicy
 
-from .action import PortfolioAction
+from .action import PortfolioAction, PortfolioActionConfig
 from .interpreter import OBSERVATION_DIM
+
+
+ACTION_MASK_VERSION = "no_empty_rotation_v1"
+
+
+def portfolio_action_mask(observation: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
+    """Disallow rotation on an all-cash portfolio; leave other commands available."""
+    values = np.asarray(to_numpy(observation))
+    mask = np.ones((*values.shape[:-1], len(PortfolioAction)), dtype=np.bool_)
+    # The first global observation feature is current total stock weight.
+    mask[..., PortfolioAction.ROTATE_WORST_TO_BEST] = values[..., 0] > PortfolioActionConfig().tolerance
+    return mask
 
 
 @dataclass(frozen=True)
@@ -95,11 +107,35 @@ class PortfolioQNetwork(torch.nn.Module):
 
 
 class PortfolioDQNPolicy(DQNPolicy):
-    """Tianshou DQN with Huber loss and explicit gradient-norm clipping."""
+    """Tianshou DQN with shared action masking, Huber loss and gradient clipping."""
 
     def __init__(self, *args: Any, max_grad_norm: float, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.max_grad_norm = max_grad_norm
+
+    @staticmethod
+    def _masked_batch(batch: Batch, input: str = "obs") -> Batch:
+        observation = batch[input]
+        values = getattr(observation, "obs", observation)
+        mask = portfolio_action_mask(values)
+        existing_mask = getattr(observation, "mask", None)
+        if existing_mask is not None:
+            mask &= np.asarray(to_numpy(existing_mask), dtype=np.bool_)
+        if not np.all(mask.any(axis=-1)):
+            raise ValueError("Portfolio observation has no available actions.")
+        masked = Batch({key: value for key, value in batch.items()})
+        masked[input] = Batch(obs=values, mask=mask)
+        return masked
+
+    def forward(
+        self, batch: Batch, state: Optional[Any] = None, model: str = "model",
+        input: str = "obs", **kwargs: Any,
+    ) -> Batch:
+        # Double-DQN also calls this with obs_next when choosing its target action.
+        return super().forward(self._masked_batch(batch, input), state=state, model=model, input=input, **kwargs)
+
+    def exploration_noise(self, act: Union[np.ndarray, Batch], batch: Batch) -> Union[np.ndarray, Batch]:
+        return super().exploration_noise(act, self._masked_batch(batch))
 
     def learn(self, batch: Batch, **kwargs: Any) -> Dict[str, float]:
         if self._target and self._iter % self._freq == 0:

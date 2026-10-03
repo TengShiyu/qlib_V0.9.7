@@ -15,7 +15,12 @@ from qlib.rl.simulator import Simulator
 
 from .action import PortfolioAction, PortfolioActionConfig, PortfolioTarget, build_target_weights
 from .data import PortfolioDataSplit
-from .reward import PortfolioReward, PortfolioTurnover, calculate_portfolio_reward, calculate_turnover
+from .reward import PortfolioReward, PortfolioTurnover
+from .sizing import size_target_amounts
+
+
+# Policies trained with execution-time observations must not be silently reused.
+DECISION_TIMING_VERSION = "decision_close_v2"
 
 
 @dataclass(frozen=True)
@@ -49,7 +54,7 @@ class PortfolioSimulatorConfig:
 
 @dataclass(frozen=True)
 class PortfolioState:
-    """Portfolio state at an execution boundary."""
+    """Portfolio state at a decision close, before next-session execution."""
 
     step: int
     date: pd.Timestamp
@@ -81,6 +86,8 @@ class PortfolioTransition:
     reward: PortfolioReward
     ending_asset_weights: np.ndarray
     ending_cash_weight: float
+    requested_amounts: np.ndarray
+    filled_amounts: np.ndarray
 
 
 class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, PortfolioAction]):
@@ -94,10 +101,16 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
     ) -> None:
         self.data = data
         self.config = config
+        if config.missing_return_value != 0.0:
+            raise ValueError(
+                "The chronological simulator carries missing prices forward; missing_return_value must be 0."
+            )
         self.action_config = action_config
         self._validate_transition_chain()
         self._last_transition: Optional[PortfolioTransition] = None
         self._net_return_history: list[float] = []
+        self._amounts = np.zeros(len(data.instruments), dtype=np.float64)
+        self._cash = config.initial_value
         self._state = self._initial_state()
 
     def reset(self) -> PortfolioState:
@@ -105,6 +118,8 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
 
         self._last_transition = None
         self._net_return_history = []
+        self._amounts[:] = 0.0
+        self._cash = self.config.initial_value
         self._state = self._initial_state()
         return self.get_state()
 
@@ -121,7 +136,7 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
             done=self._state.done,
             scores=self.data.scores[observation_step].copy(),
             volatility=self.data.volatility[observation_step].copy(),
-            tradable=self.data.execution_tradable[observation_step].copy(),
+            tradable=self.data.observation_tradable[observation_step].copy(),
             last_transition=self._last_transition,
             net_return_history=np.asarray(self._net_return_history, dtype=np.float64),
         )
@@ -132,7 +147,11 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
         return self._state.done
 
     def step(self, action: Union[PortfolioAction, int]) -> PortfolioTransition:
-        """Execute one action and advance through its two-session return."""
+        """Freeze orders at T, fill at T+1, and mark the account at T+2.
+
+        The next observation sees only T+2 account information. In particular,
+        the T+1 to T+3 supervised forward label never enters this state.
+        """
 
         if self._state.done:
             raise RuntimeError("Cannot step a completed portfolio episode; call reset().")
@@ -148,30 +167,56 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
             current_asset_weights=current_assets,
             current_cash_weight=current_cash,
             scores=self.data.scores[step],
-            tradable=self.data.execution_tradable[step],
+            tradable=self.data.observation_tradable[step],
             volatility=self.data.volatility[step],
             config=self.action_config,
         )
-        turnover = calculate_turnover(current_assets, target.asset_weights)
-        reward = calculate_portfolio_reward(
-            target_asset_weights=target.asset_weights,
-            target_cash_weight=target.cash_weight,
-            asset_returns=self.data.asset_returns[step],
-            turnover=turnover,
-            buy_cost=self.config.buy_cost,
-            sell_cost=self.config.sell_cost,
-            min_cost=self.config.min_cost,
-            turnover_penalty_rate=self.config.turnover_penalty,
-            portfolio_value=starting_value,
-            missing_return_value=self.config.missing_return_value,
-            tolerance=self.config.tolerance,
+        decision_prices = self.data.decision_close[step]
+        desired = (
+            self._amounts.copy()
+            if resolved_action == PortfolioAction.HOLD
+            else size_target_amounts(
+                self._amounts,
+                target.asset_weights,
+                starting_value,
+                decision_prices,
+                self.data.observation_tradable[step],
+                max(self.config.buy_cost, self.config.sell_cost),
+            )
         )
-
-        ending_value = starting_value * (1.0 + reward.net_return)
+        requested = desired - self._amounts
+        filled, fees = self._execute(requested, step)
+        execution_prices = self._mark_prices(self.data.execution_close[step], decision_prices)
+        ending_prices = self._mark_prices(self.data.reward_end_close[step], execution_prices)
+        asset_values = self._amounts * np.nan_to_num(ending_prices, nan=0.0)
+        ending_value = float(asset_values.sum() + self._cash)
         if not np.isfinite(ending_value) or ending_value <= 0.0:
             raise ValueError("Portfolio value became non-positive or non-finite.")
-
-        ending_assets, ending_cash = self._drift_weights(target, reward)
+        ending_assets = asset_values / ending_value
+        ending_cash = self._cash / ending_value
+        # Turnover and costs describe actual fills, not unfilled intentions.
+        values = filled * np.nan_to_num(execution_prices, nan=0.0) / starting_value
+        buy_orders, sell_orders = np.maximum(values, 0.0), np.maximum(-values, 0.0)
+        turnover = PortfolioTurnover(float(buy_orders.sum()), float(sell_orders.sum()), buy_orders, sell_orders)
+        net_return = ending_value / starting_value - 1.0
+        cost = fees / starting_value
+        penalty = self.config.turnover_penalty * turnover.one_way
+        missing = ~np.isfinite(self.data.reward_end_close[step]) | (self.data.reward_end_close[step] <= 0.0)
+        reward = PortfolioReward(
+            gross_return=net_return + cost,
+            transaction_cost=cost,
+            turnover_penalty=penalty,
+            net_return=net_return,
+            learning_reward=net_return - penalty,
+            missing_return_weight=float(asset_values[missing].sum() / starting_value),
+            effective_asset_returns=np.divide(
+                ending_prices,
+                decision_prices,
+                out=np.ones_like(ending_prices),
+                where=np.isfinite(decision_prices) & (decision_prices > 0.0),
+            )
+            - 1.0,
+        )
         next_step = step + 1
         done = next_step == len(self.data.decision_dates)
         next_date = self.data.reward_end_dates[step]
@@ -189,6 +234,8 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
             reward=reward,
             ending_asset_weights=ending_assets.copy(),
             ending_cash_weight=ending_cash,
+            requested_amounts=requested.copy(),
+            filled_amounts=filled.copy(),
         )
         self._last_transition = transition
         self._net_return_history.append(reward.net_return)
@@ -211,7 +258,7 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
     def _initial_state(self) -> PortfolioState:
         return PortfolioState(
             step=0,
-            date=self.data.execution_dates[0],
+            date=self.data.decision_dates[0],
             portfolio_value=self.config.initial_value,
             asset_weights=np.zeros(len(self.data.instruments), dtype=np.float64),
             cash_weight=1.0,
@@ -223,31 +270,54 @@ class PortfolioSimulator(Simulator[PortfolioDataSplit, PortfolioState, Portfolio
             net_return_history=np.empty(0, dtype=np.float64),
         )
 
-    def _drift_weights(self, target: PortfolioTarget, reward: PortfolioReward) -> tuple[np.ndarray, float]:
-        asset_values = target.asset_weights * (1.0 + reward.effective_asset_returns)
-        cash_value = max(target.cash_weight - reward.transaction_cost, 0.0)
-        fee_shortfall = max(reward.transaction_cost - target.cash_weight, 0.0)
-        if fee_shortfall > 0.0:
-            asset_value = float(asset_values.sum())
-            if asset_value <= fee_shortfall:
-                raise ValueError("Transaction costs exhausted the post-return portfolio value.")
-            asset_values *= (asset_value - fee_shortfall) / asset_value
+    def _mark_prices(self, prices: np.ndarray, previous: np.ndarray) -> np.ndarray:
+        valid = np.isfinite(prices) & (prices > 0.0)
+        marks = np.where(valid, prices, previous)
+        if np.any((self._amounts > 0.0) & (~np.isfinite(marks) | (marks <= 0.0))):
+            raise ValueError("A held asset has no past price for valuation.")
+        return marks
 
-        net_value = float(asset_values.sum() + cash_value)
-        expected_net_value = 1.0 + reward.net_return
-        if not np.isfinite(net_value) or net_value <= 0.0:
-            raise ValueError("Net portfolio value became non-positive or non-finite.")
-        if not np.isclose(net_value, expected_net_value, atol=self.config.tolerance, rtol=0.0):
-            raise ValueError("Post-return holdings do not reconcile to the net portfolio return.")
+    def _execute(self, requested: np.ndarray, step: int) -> tuple[np.ndarray, float]:
+        """Apply frozen quantities at execution prices, sells before buys.
 
-        ending_assets = asset_values / net_value
-        ending_cash = cash_value / net_value
-        if not np.isclose(ending_assets.sum() + ending_cash, 1.0, atol=self.config.tolerance, rtol=0.0):
-            raise ValueError("Post-return asset and cash weights do not sum to one.")
-        return ending_assets, float(ending_cash)
+        An unavailable stock does not fill. Cash shortages reduce buys in the
+        stable instrument order. No future return is used to filter orders.
+        """
+        prices = self.data.execution_close[step]
+        tradable = self.data.execution_tradable[step] & np.isfinite(prices) & (prices > 0.0)
+        filled = np.zeros_like(requested)
+        fees = 0.0
+        for index in np.flatnonzero((requested < 0.0) & tradable):
+            amount = min(-requested[index], self._amounts[index])
+            value = amount * prices[index]
+            fee = max(value * self.config.sell_cost, self.config.min_cost)
+            if self._cash + value < fee:
+                continue
+            self._amounts[index] -= amount
+            self._cash += value - fee
+            filled[index] = -amount
+            fees += fee
+        for index in np.flatnonzero((requested > 0.0) & tradable):
+            budget = max(
+                0.0,
+                min(
+                    self._cash / (1.0 + self.config.buy_cost),
+                    self._cash - self.config.min_cost,
+                ),
+            )
+            amount = min(requested[index], budget / prices[index])
+            if amount <= 0.0:
+                continue
+            value = amount * prices[index]
+            fee = max(value * self.config.buy_cost, self.config.min_cost)
+            self._amounts[index] += amount
+            self._cash = max(0.0, self._cash - value - fee)
+            filled[index] = amount
+            fees += fee
+        return filled, fees
 
     def _validate_transition_chain(self) -> None:
         if len(self.data.decision_dates) > 1 and not np.all(
-            self.data.execution_dates[1:] == self.data.reward_end_dates[:-1]
+            self.data.decision_dates[1:] == self.data.reward_end_dates[:-1]
         ):
-            raise ValueError("Each execution date must equal the previous transition's reward-end date.")
+            raise ValueError("Each transition must end at the next decision date.")

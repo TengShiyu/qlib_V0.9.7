@@ -23,8 +23,8 @@ from .action import PortfolioActionConfig
 from .benchmark import BenchmarkResult, calculate_metrics
 from .data import PortfolioDataSplit
 from .integration import make_portfolio_env
-from .policy import PortfolioDQNConfig, PortfolioDQNPolicy, make_dqn_policy
-from .simulator import PortfolioSimulatorConfig
+from .policy import ACTION_MASK_VERSION, PortfolioDQNConfig, PortfolioDQNPolicy, make_dqn_policy
+from .simulator import DECISION_TIMING_VERSION, PortfolioSimulatorConfig
 
 
 @dataclass(frozen=True)
@@ -191,11 +191,12 @@ def evaluate_dqn(
 
 
 def save_dqn_checkpoint(policy: PortfolioDQNPolicy, path: Union[str, Path]) -> Path:
-    """Save model and target-network weights outside Git."""
+    """Save weights and the observation/accounting timing contract outside Git."""
 
     checkpoint_path = Path(path).expanduser()
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(policy.state_dict(), checkpoint_path)
+    torch.save({"decision_timing_version": DECISION_TIMING_VERSION,
+                "action_mask_version": ACTION_MASK_VERSION, "state_dict": policy.state_dict()}, checkpoint_path)
     return checkpoint_path
 
 
@@ -203,9 +204,17 @@ def load_dqn_checkpoint(path: Union[str, Path], config: PortfolioDQNConfig) -> P
     """Build a fresh policy and load a trusted weights-only checkpoint."""
 
     checkpoint_path = Path(path).expanduser()
-    policy = make_dqn_policy(config)
     state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    policy.load_state_dict(state)
+    if not isinstance(state, dict) or state.get("decision_timing_version") != DECISION_TIMING_VERSION:
+        raise ValueError(
+            "RL checkpoint uses obsolete decision timing. Retrain the policy with "
+            "decision-time observations before evaluation or serving."
+        )
+    if state.get("action_mask_version") not in (None, ACTION_MASK_VERSION):
+        raise ValueError("RL checkpoint uses an unsupported action mask version.")
+    # Legacy decision_close_v2 weights retain their shape and use today's mask.
+    policy = make_dqn_policy(config)
+    policy.load_state_dict(state["state_dict"])
     return policy
 
 

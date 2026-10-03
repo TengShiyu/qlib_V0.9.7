@@ -18,11 +18,12 @@ def make_data(asset_returns: np.ndarray) -> PortfolioDataSplit:
     calendar = pd.bdate_range("2025-01-02", periods=decision_count * 2 + 2)
     decisions = calendar[np.arange(0, decision_count * 2, 2)]
     executions = calendar[np.arange(1, decision_count * 2 + 1, 2)]
-    reward_ends = calendar[np.arange(3, decision_count * 2 + 3, 2)]
+    reward_ends = calendar[np.arange(2, decision_count * 2 + 2, 2)]
     scores = np.tile(np.linspace(0.1, 0.2, instrument_count), (decision_count, 1))
     volatility = np.full_like(scores, 0.02)
     tradable = np.ones_like(scores, dtype=np.bool_)
-    execution_close = np.full_like(scores, 100.0)
+    decision_close = 100.0 * np.vstack([np.ones(instrument_count), np.cumprod(1.0 + returns, axis=0)[:-1]])
+    execution_close = decision_close.copy()
     reward_end_close = execution_close * (1.0 + returns)
     return PortfolioDataSplit(
         instruments=tuple(f"STOCK{i}" for i in range(instrument_count)),
@@ -33,6 +34,7 @@ def make_data(asset_returns: np.ndarray) -> PortfolioDataSplit:
         volatility=volatility,
         observation_tradable=tradable.copy(),
         execution_tradable=tradable,
+        decision_close=decision_close,
         execution_close=execution_close,
         reward_end_close=reward_end_close,
         asset_returns=returns,

@@ -47,6 +47,33 @@ class FakeRollingGen:
 
 
 class PortfolioRollingWindowTest(unittest.TestCase):
+    def test_ml_three_session_label_is_available_by_each_test_start(self):
+        calendar = pd.bdate_range("2024-01-01", periods=180)
+        task = {
+            "dataset": {
+                "kwargs": {
+                    "segments": {
+                        "train": (calendar[1], calendar[50]),
+                        "valid": (calendar[51], calendar[80]),
+                        "test": (calendar[81], calendar[140]),
+                    }
+                }
+            }
+        }
+        # Same generator and truncation used by the online ML workflow. Avoid
+        # external datasets, MLflow, or fitting models in this calendar test.
+        with patch("qlib.workflow.task.utils.D") as provider, patch("qlib.data.D", provider):
+            provider.calendar.return_value = calendar
+            tasks = RollingGen(step=20, rtype=RollingGen.ROLL_SD, trunc_days=3, ds_extra_mod_func=None).generate(task)
+        self.assertGreater(len(tasks), 1)
+        for generated in tasks:
+            segments = generated["dataset"]["kwargs"]["segments"]
+            prediction_index = calendar.get_loc(segments["test"][0])
+            for name in ("train", "valid"):
+                # Label: close[t+3] / close[t+1] - 1. At test-start close,
+                # every label used for fitting/selection must already exist.
+                self.assertLessEqual(calendar.get_loc(segments[name][1]) + 3, prediction_index)
+
     def setUp(self):
         self.segments = {
             "train": DateRange("2025-01-02", "2025-10-31"),
@@ -86,13 +113,9 @@ class PortfolioRollingWindowTest(unittest.TestCase):
 
     def test_rejects_invalid_shared_rolling_settings(self):
         with self.assertRaisesRegex(ValueError, "trading_interval"):
-            generate_portfolio_rolling_windows(
-                self.segments, trading_interval=0, step=10, rolling_type="ROLL_SD"
-            )
+            generate_portfolio_rolling_windows(self.segments, trading_interval=0, step=10, rolling_type="ROLL_SD")
         with self.assertRaisesRegex(ValueError, "rolling_type"):
-            generate_portfolio_rolling_windows(
-                self.segments, trading_interval=2, step=10, rolling_type="OTHER"
-            )
+            generate_portfolio_rolling_windows(self.segments, trading_interval=2, step=10, rolling_type="OTHER")
         with self.assertRaisesRegex(ValueError, "rl_split_ratio"):
             generate_portfolio_rolling_windows(
                 self.segments,

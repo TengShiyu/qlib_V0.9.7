@@ -28,6 +28,7 @@ class FixedActionPolicy:
         self.action = action
 
     def __call__(self, batch):
+        self.last_observation = batch.obs.copy()
         return SimpleNamespace(act=np.asarray([self.action], dtype=np.int64))
 
     def set_eps(self, epsilon):
@@ -39,6 +40,7 @@ class FixedActionPolicy:
 
 class FakeCalendar:
     dates = pd.DatetimeIndex(["2025-01-02", "2025-01-03", "2025-01-06", "2025-01-07"])
+    _calendar = dates
 
     def __init__(self) -> None:
         self.step = 0
@@ -87,6 +89,8 @@ class FakeAccount:
 class FakeExchange:
     open_cost = 0.0
     close_cost = 0.0
+    min_cost = 0.0
+    impact_cost = 0.0
 
     def __init__(self) -> None:
         self.last_target_position = None
@@ -114,6 +118,74 @@ class FakeExchange:
 
 
 class PortfolioDQNStrategyConfigTest(unittest.TestCase):
+    def test_decision_is_invariant_to_execution_prices_and_suspensions(self):
+        """Every policy/target/order input must be read at T, never T+1."""
+
+        class PositionWithHoldings(FakePosition):
+            def __init__(self):
+                self.cash = 1000.0
+
+            def get_stock_amount_dict(self):
+                return {"AAPL": 10.0}
+
+        class DatedExchange(FakeExchange):
+            def __init__(self, future_price, future_tradable):
+                super().__init__()
+                self.future_price = future_price
+                self.future_tradable = future_tradable
+                self.queries = []
+
+            def get_close(self, stock_id, start_time, end_time):
+                self.queries.append(pd.Timestamp(end_time))
+                return 100.0 if pd.Timestamp(start_time) == FakeCalendar.dates[0] else self.future_price
+
+            def is_stock_tradable(self, **kwargs):
+                self.queries.append(pd.Timestamp(kwargs["end_time"]))
+                return True if pd.Timestamp(kwargs["start_time"]) == FakeCalendar.dates[0] else self.future_tradable
+
+            def generate_order_for_target_amount_position(
+                self, target_position, current_position, start_time, end_time
+            ):
+                self.queries.append(pd.Timestamp(end_time))
+                self.last_target_position = target_position
+                return [
+                    Order("AAPL", target_position["AAPL"] - current_position["AAPL"], Order.BUY, start_time, end_time)
+                ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "portfolio_dqn_rl/training/best_policy.pt"
+            save_dqn_checkpoint(make_dqn_policy(), checkpoint)
+            route = RollingPolicyRoute(
+                0, FakeCalendar.dates[0], FakeCalendar.dates[-1], checkpoint, frozenset({FakeCalendar.dates[0]})
+            )
+            signal = pd.Series(
+                [0.2],
+                index=pd.MultiIndex.from_tuples([(FakeCalendar.dates[0], "AAPL")], names=["datetime", "instrument"]),
+            )
+            results = []
+            for future_price, future_tradable in [(100.0, True), (500.0, False)]:
+                with mock.patch("qlib.contrib.strategy.rl_dqn.load_rolling_policy_routes", return_value=[route]):
+                    strategy = PortfolioDQNStrategy(signal=signal, experiment_root=root)
+                strategy._load_volatility = lambda instruments, decision_date: np.array([0.1])
+                calendar, exchange = FakeCalendar(), DatedExchange(future_price, future_tradable)
+                calendar.step = 1
+                strategy.reset(
+                    level_infra={"trade_calendar": calendar},
+                    common_infra={"trade_account": FakeAccount(PositionWithHoldings()), "trade_exchange": exchange},
+                )
+                strategy.policy = FixedActionPolicy(2)
+                strategy._active_window_id = 0
+                decision = strategy.generate_trade_decision()
+                order = decision.get_decision()[0]
+                self.assertTrue(all(date <= FakeCalendar.dates[0] for date in exchange.queries))
+                self.assertEqual(order.start_time, FakeCalendar.dates[1])
+                self.assertAlmostEqual(order.amount, 10.0)
+                self.assertAlmostEqual(strategy._last_decision_value, 2000.0)
+                results.append((strategy.last_observation, strategy.last_action, exchange.last_target_position))
+            np.testing.assert_array_equal(results[0][0], results[1][0])
+            self.assertEqual(results[0][1:], results[1][1:])
+
     def test_calendar_fallback_moves_when_future_session_is_added(self) -> None:
         calendar = TradeCalendarManager.__new__(TradeCalendarManager)
         calendar.start_index = 0
@@ -125,9 +197,7 @@ class PortfolioDQNStrategyConfigTest(unittest.TestCase):
             (pd.Timestamp("2026-07-31"), pd.Timestamp("2026-07-31")),
         )
 
-        calendar._calendar = pd.DatetimeIndex(
-            ["2026-07-30", "2026-07-31", "2026-08-03"]
-        ).to_numpy()
+        calendar._calendar = pd.DatetimeIndex(["2026-07-30", "2026-07-31", "2026-08-03"]).to_numpy()
         start_time, end_time = calendar.get_step_time()
 
         self.assertEqual(start_time, pd.Timestamp("2026-07-31"))
@@ -203,9 +273,7 @@ class PortfolioDQNStrategyConfigTest(unittest.TestCase):
                 checkpoint_path=checkpoint,
                 decision_dates=frozenset({pd.Timestamp("2025-01-02")}),
             )
-            with mock.patch(
-                "qlib.contrib.strategy.rl_dqn.load_rolling_policy_routes", return_value=[route]
-            ):
+            with mock.patch("qlib.contrib.strategy.rl_dqn.load_rolling_policy_routes", return_value=[route]):
                 strategy = PortfolioDQNStrategy(
                     signal=signal,
                     experiment_root=root,
@@ -260,16 +328,10 @@ class PortfolioDQNStrategyConfigTest(unittest.TestCase):
                 test_start=pd.Timestamp("2025-01-02"),
                 test_end=pd.Timestamp("2025-01-07"),
                 checkpoint_path=checkpoint,
-                decision_dates=frozenset(
-                    {pd.Timestamp("2025-01-02"), pd.Timestamp("2025-01-06")}
-                ),
+                decision_dates=frozenset({pd.Timestamp("2025-01-02"), pd.Timestamp("2025-01-06")}),
             )
-            with mock.patch(
-                "qlib.contrib.strategy.rl_dqn.load_rolling_policy_routes", return_value=[route]
-            ):
-                strategy = PortfolioDQNStrategy(
-                    signal=signal, experiment_root=root, trading_interval=2
-                )
+            with mock.patch("qlib.contrib.strategy.rl_dqn.load_rolling_policy_routes", return_value=[route]):
+                strategy = PortfolioDQNStrategy(signal=signal, experiment_root=root, trading_interval=2)
             strategy._load_volatility = lambda instruments, decision_date: np.full(len(instruments), 0.1)
             calendar = FakeCalendar()
             position = FakePosition()
@@ -343,9 +405,7 @@ class PortfolioDQNStrategyConfigTest(unittest.TestCase):
             routes = load_rolling_policy_routes(
                 root,
                 trading_interval=2,
-                calendar_provider=lambda start_time, end_time, freq: pd.bdate_range(
-                    start_time, end_time
-                ),
+                calendar_provider=lambda start_time, end_time, freq: pd.bdate_range(start_time, end_time),
             )
 
             self.assertEqual([route.window_id for route in routes], [0, 1])
@@ -390,16 +450,12 @@ class PortfolioDQNStrategyConfigTest(unittest.TestCase):
                     names=["datetime", "instrument"],
                 ),
             )
-            with mock.patch(
-                "qlib.contrib.strategy.rl_dqn.load_rolling_policy_routes", return_value=routes
-            ), mock.patch(
+            with mock.patch("qlib.contrib.strategy.rl_dqn.load_rolling_policy_routes", return_value=routes), mock.patch(
                 "qlib.contrib.strategy.rl_dqn.load_dqn_checkpoint",
                 side_effect=[FixedActionPolicy(2), FixedActionPolicy(4)],
             ) as loader:
                 strategy = PortfolioDQNStrategy(signal=signal, experiment_root=root)
-                strategy._load_volatility = lambda instruments, decision_date: np.full(
-                    len(instruments), 0.1
-                )
+                strategy._load_volatility = lambda instruments, decision_date: np.full(len(instruments), 0.1)
                 calendar = FakeCalendar()
                 strategy.reset(
                     level_infra={"trade_calendar": calendar},

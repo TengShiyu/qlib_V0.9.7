@@ -92,11 +92,13 @@ def run_market_benchmark(name: str, data: PortfolioDataSplit, close: pd.Series) 
     prices = close.copy()
     prices.index = pd.DatetimeIndex(prices.index).normalize()
     prices = prices[~prices.index.duplicated(keep="last")].sort_index().astype(float)
-    start_prices = prices.reindex(data.execution_dates).to_numpy(dtype=np.float64)
+    # A continuously invested index is measured over the same decision-to-
+    # decision intervals as account rewards; it does not submit next-day orders.
+    start_prices = prices.reindex(data.decision_dates).to_numpy(dtype=np.float64)
     end_prices = prices.reindex(data.reward_end_dates).to_numpy(dtype=np.float64)
     valid = np.isfinite(start_prices) & (start_prices > 0.0) & np.isfinite(end_prices) & (end_prices > 0.0)
     if not np.all(valid):
-        missing_dates = data.execution_dates[~valid] if np.any(~valid) else []
+        missing_dates = data.decision_dates[~valid] if np.any(~valid) else []
         raise ValueError(f"Market benchmark is missing valid prices for transition dates: {list(missing_dates)}")
 
     returns = end_prices / start_prices - 1.0
@@ -104,7 +106,7 @@ def run_market_benchmark(name: str, data: PortfolioDataSplit, close: pd.Series) 
     transitions = pd.DataFrame(
         {
             "decision_date": data.decision_dates,
-            "execution_date": data.execution_dates,
+            "execution_date": data.decision_dates,
             "reward_end_date": data.reward_end_dates,
             "action": name,
             "gross_return": returns,
